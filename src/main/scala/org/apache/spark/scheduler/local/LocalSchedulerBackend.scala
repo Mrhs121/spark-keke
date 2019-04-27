@@ -110,6 +110,7 @@ private[spark] class LocalSchedulerBackend(
     override def onStopRequest(): Unit = stop(SparkAppHandle.State.KILLED)
   }
 
+
   /**
    * Returns a list of URLs representing the user classpath.
    *
@@ -133,7 +134,9 @@ private[spark] class LocalSchedulerBackend(
     launcherBackend.setAppId(appId)
     launcherBackend.setState(SparkAppHandle.State.RUNNING)
   }
-
+  override def preMakeOffers(taskId:Long,exid:String) {
+    println("do not anything")
+  }
   override def stop() {
     stop(SparkAppHandle.State.FINISHED)
   }

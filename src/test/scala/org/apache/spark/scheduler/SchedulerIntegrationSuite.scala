@@ -434,7 +434,9 @@ private[spark] class SingleCoreMockBackend(
   taskScheduler: TaskSchedulerImpl) extends MockBackend(conf, taskScheduler) {
 
   val cores = 1
-
+  override def preMakeOffers(taskId:Long,exid:String) {
+    println("do not anything")
+  }
   override def defaultParallelism(): Int = conf.getInt("spark.default.parallelism", cores)
 
   freeCores = cores

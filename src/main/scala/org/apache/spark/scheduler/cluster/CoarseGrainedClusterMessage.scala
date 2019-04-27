@@ -77,6 +77,10 @@ private[spark] object CoarseGrainedClusterMessages {
     }
   }
 
+  // huangsheng
+  case class PreMakeOffers(taskId:Long,executorId: String) extends CoarseGrainedClusterMessage
+
+
   // Internal messages in driver
   case object ReviveOffers extends CoarseGrainedClusterMessage
 

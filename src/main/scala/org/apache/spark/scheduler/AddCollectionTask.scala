@@ -29,5 +29,6 @@ private[spark] class AddCollectionTask(
     var preTime: Int,
     var firstcheckFlag: Boolean,
 	var nstate: TaskState){
-  override def toString: String = "AddCollectionTask " + taskId
+
+  override def toString = s"AddCollectionTask($taskId, $execId, $preTime, $firstcheckFlag, $nstate)"
 }

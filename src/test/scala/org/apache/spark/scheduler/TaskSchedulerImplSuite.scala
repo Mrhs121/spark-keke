@@ -37,6 +37,9 @@ class FakeSchedulerBackend extends SchedulerBackend {
   def reviveOffers() {}
   def defaultParallelism(): Int = 1
   def maxNumConcurrentTasks(): Int = 0
+  override def preMakeOffers(taskId:Long,exid:String) {
+    println("do not anything")
+  }
 }
 
 class TaskSchedulerImplSuite extends SparkFunSuite with LocalSparkContext with BeforeAndAfterEach

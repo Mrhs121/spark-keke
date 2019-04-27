@@ -24,7 +24,8 @@ package org.apache.spark.scheduler
  */
 private[spark] trait SchedulerBackend {
   private val appId = "spark-application-" + System.currentTimeMillis
-
+  // huangsheng
+  def preMakeOffers(taskId:Long,exid:String):Unit
   def start(): Unit
   def stop(): Unit
   def reviveOffers(): Unit

@@ -125,6 +125,7 @@ class BlacklistIntegrationSuite extends SchedulerIntegrationSuite[MultiExecutorM
 }
 
 class MultiExecutorMockBackend(
+
     conf: SparkConf,
     taskScheduler: TaskSchedulerImpl) extends MockBackend(conf, taskScheduler) {
 
@@ -132,6 +133,9 @@ class MultiExecutorMockBackend(
   val nExecutorsPerHost = conf.getInt("spark.testing.nExecutorsPerHost", 4)
   val nCoresPerExecutor = conf.getInt("spark.testing.nCoresPerExecutor", 2)
 
+  override def preMakeOffers(taskId:Long,exid:String) {
+    println("do not anything")
+  }
   override val executorIdToExecutor: Map[String, ExecutorTaskStatus] = {
     (0 until nHosts).flatMap { hostIdx =>
       val hostName = "host-" + hostIdx

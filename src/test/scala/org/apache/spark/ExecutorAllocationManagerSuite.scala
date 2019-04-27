@@ -1362,7 +1362,9 @@ private class DummyLocalSchedulerBackend (sc: SparkContext, sb: SchedulerBackend
       hostToLocalTaskCount: Map[String, Int]): Boolean = true
 
   override def requestExecutors(numAdditionalExecutors: Int): Boolean = true
-
+  override def preMakeOffers(taskId:Long,exid:String) {
+    println("do not anything")
+  }
   override def killExecutors(
       executorIds: Seq[String],
       adjustTargetNumExecutors: Boolean,
