@@ -22,6 +22,7 @@ import org.apache.spark.TaskState.TaskState
  * Description of a task that gets passed onto executors to be executed, usually created by
  * `TaskSetManager.resourceOffer`.
  */
+ /weirutilerutl
  //keke:2019-4-20
 private[spark] class AddCollectionTask(
     val taskId: Long,
