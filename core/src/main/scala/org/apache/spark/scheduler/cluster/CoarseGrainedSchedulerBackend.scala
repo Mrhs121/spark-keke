@@ -19,11 +19,12 @@ package org.apache.spark.scheduler.cluster
 
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+
 import javax.annotation.concurrent.GuardedBy
+import jdk.nashorn.internal.runtime.options.LoggingOption.LoggerInfo
 
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 import scala.concurrent.Future
-
 import org.apache.spark.{ExecutorAllocationClient, SparkEnv, SparkException, TaskState}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
@@ -101,6 +102,8 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   private val reviveThread =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("driver-revive-thread")
 
+
+  // 驱动端 通信
   class DriverEndpoint(override val rpcEnv: RpcEnv, sparkProperties: Seq[(String, String)])
     extends ThreadSafeRpcEndpoint with Logging {
 
@@ -134,9 +137,11 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
  
     //keke:2019-4-20
     def checkTaskPreTime(){
+
     if(scheduler.nls.length != 0){
       for(i <- 0 until scheduler.nls.length){
         // 多线程问题  枷锁
+
         if(scheduler.nls(i).preTime == 0 && scheduler.nls(i).firstcheckFlag == false ){
           // 加上同步所锁定
           //CoarseGrainedSchedulerBackend.this.synchronized{
@@ -176,7 +181,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         //}
 
       case ReviveOffers =>
-         logInfo(s"KEKE reviveOffers receive")
+        logInfo(s"KEKE reviveOffers receive")
         makeOffers()
 
       case KillTask(taskId, executorId, interruptThread, reason) =>
@@ -310,13 +315,17 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       // Make sure no executor is killed while some task is launching on it
       val taskDescs = CoarseGrainedSchedulerBackend.this.synchronized {
         // Filter out executors under killing
+        logInfo("prepare scheduler.resourceOffers")
         if (executorIsAlive(executorId)) {
+          logInfo("success make -> resourceOffers")
           val executorData = executorDataMap(executorId)
           val workOffers = IndexedSeq(
             new WorkerOffer(executorId, executorData.executorHost, executorData.freeCores,
               Some(executorData.executorAddress.hostPort)))
+
           scheduler.resourceOffers(workOffers)
         } else {
+          logInfo("failed make -> resourceOffers")
           Seq.empty
         }
       }

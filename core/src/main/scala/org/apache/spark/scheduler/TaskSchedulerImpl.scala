@@ -180,7 +180,8 @@ private[spark] class TaskSchedulerImpl(
 
   override def start() {
     backend.start()
-
+    logInfo("=============> start time counter thread ")
+    nTimeCounter()
     if (!isLocal && conf.getBoolean("spark.speculation", false)) {
       logInfo("Starting speculative execution thread")
       speculationScheduler.scheduleWithFixedDelay(new Runnable {
@@ -195,6 +196,7 @@ private[spark] class TaskSchedulerImpl(
     waitBackendReady()
   }
 
+  // 提交任务
   override def submitTasks(taskSet: TaskSet) {
     logInfo("=================================<<<<<<<<<===========>>>>>>>h黄晟")
     val tasks = taskSet.tasks
@@ -313,11 +315,12 @@ private[spark] class TaskSchedulerImpl(
     var launchedTask = false
     // nodes and executors that are blacklisted for the entire application have already been
     // filtered out by this point
-    // 2
+    // 3个ex
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
 
+      // 此处有问题
 
       if (availableCpus(i) >= CPUS_PER_TASK) {
         logInfo("黄晟 =====> current executor "+i+" avilablecpus is : "+availableCpus(i))
@@ -330,6 +333,7 @@ private[spark] class TaskSchedulerImpl(
             taskIdToExecutorId(tid) = execId
             executorIdToRunningTaskIds(execId).add(tid)
             availableCpus(i) -= CPUS_PER_TASK
+            logInfo("黄晟 =====> availableCpus(i) -= CPUS_PER_TASK avilablecpus is : "+availableCpus(i))
             assert(availableCpus(i) >= 0)
             // Only update hosts for a barrier task.
             if (taskSet.isBarrier) {
@@ -355,9 +359,11 @@ private[spark] class TaskSchedulerImpl(
    * sets for tasks in order of priority. We fill each node with tasks in a round-robin manner so
    * that tasks are balanced across the cluster.
    */
+  //call by makeOffers
   def resourceOffers(offers: IndexedSeq[WorkerOffer]): Seq[Seq[TaskDescription]] = synchronized {
     // Mark each slave as alive and remember its hostname
     // Also track if new executor is added
+    logInfo("==============> resourceOffers")
     var newExecAvail = false
     for (o <- offers) {
       if (!hostToExecutors.contains(o.host)) {
@@ -391,11 +397,13 @@ private[spark] class TaskSchedulerImpl(
 
     // Build a list of tasks to assign to each worker.
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
-    val availableCpus = shuffledOffers.map(o => o.cores).toArray
+
+    val availableCpus = shuffledOffers.map(o => o.cores).toArray // (1,1,1) 三个ex 每个e三个core
     val availableSlots = shuffledOffers.map(o => o.cores / CPUS_PER_TASK).sum
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
+
     for (taskSet <- sortedTaskSets) {
-      logDebug("parentName: %s, name: %s, runningTasks: %s".format(
+      logInfo("resourceOffers parentName: %s, name: %s, runningTasks: %s".format(
         taskSet.parent.name, taskSet.name, taskSet.runningTasks))
       if (newExecAvail) {
         taskSet.executorAdded()
@@ -421,9 +429,12 @@ private[spark] class TaskSchedulerImpl(
         for (currentMaxLocality <- taskSet.myLocalityLevels) {
           var launchedTaskAtCurrentMaxLocality = false
           do {
+//resourceOfferSingleTaskSet ---------
+            // 给core数量的任务分配资源
             launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(taskSet,
               currentMaxLocality, shuffledOffers, availableCpus, tasks, addressesWithDescs)
             launchedAnyTask |= launchedTaskAtCurrentMaxLocality
+            logInfo("launchedTaskAtCurrentMaxLocality is : "+launchedTaskAtCurrentMaxLocality)
           } while (launchedTaskAtCurrentMaxLocality)
         }
         if (!launchedAnyTask) {
@@ -456,6 +467,7 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
+
     // TODO SPARK-24823 Cancel a job that contains barrier stage(s) if the barrier tasks don't get
     // launched within a configured time.
     if (tasks.size > 0) {
@@ -464,16 +476,20 @@ private[spark] class TaskSchedulerImpl(
       //keke:2019-4-18
       addTask(tasks)
       //keke:2019-4-25
-      nTimeCounter()
+      for ( n <- nls){
+        logInfo("===========> "+n.toString)
+      }
     }
     return tasks
   }
+
+
   //keke:2019-4-18
     //定义全局变量nls存储已分配资源的任务
   val nls = new ArrayBuffer[AddCollectionTask](100000)
   //keke:2019-4-18
   //将分配好资源的任务添加到列表中，增加预测时间和任务状态属性。
-
+  // call by resourceOffers
   def addTask(tasks:Seq[Seq[TaskDescription]]){
 
     for(ntask <- tasks.flatten){
@@ -482,9 +498,9 @@ private[spark] class TaskSchedulerImpl(
   			val nexecId = ntask.executorId
   			var preTime: Int = 0
         //var firstcheckFlag: Boolean = false
-  			if(executorIdToHost(nexecId) == "172.16.143.128") preTime = 8
+  			if(executorIdToHost(nexecId) == "172.16.143.128") preTime = 6
   			if(executorIdToHost(nexecId) == "172.16.143.129") preTime = 8
-  			if(executorIdToHost(nexecId) == "172.16.143.130") preTime = 8
+  			if(executorIdToHost(nexecId) == "172.16.143.130") preTime = 4
   			var nstate: TaskState = TaskState.LAUNCHING
   			val ls = new AddCollectionTask(ntId, nexecId, preTime,false, nstate)
   			nls += ls
@@ -495,6 +511,7 @@ private[spark] class TaskSchedulerImpl(
   //定义一个时间计时器的全局线程，用于减去预测时间
   //keke:2019-4-18  
   def nTimeCounter(){
+
     if (!isLocal) {
       logInfo("Starting Timer thread")
 
@@ -506,6 +523,7 @@ private[spark] class TaskSchedulerImpl(
       }, 1000, 1000, TimeUnit.MILLISECONDS)
     }
  }
+
  //keke:2019-4-20
   //每隔1000毫秒预测时间减一
   def checkPreTime(){
