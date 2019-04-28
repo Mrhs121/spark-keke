@@ -202,6 +202,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         // 如果 比预测时间提早完成
         // 那么这里什么事情都没有做
         if (TaskState.isFinished(state)) {
+
           executorDataMap.get(executorId) match {
             case Some(executorInfo) =>
               logInfo("检测是否比预测时间提前完成")

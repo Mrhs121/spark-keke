@@ -616,7 +616,7 @@ private[spark] class TaskSchedulerImpl(
         while(i < nls.length){
           if(tid == nls(i).taskId){
             // 在这里判断 真实的执行时间是否比预测时间快
-            if(nls(i).preTime !=0 ){
+            if(nls(i).preTime > 0 ){
               // 说明此时的预测时间 比 真实时间 慢
               // 此时应该及时的释放core
 
