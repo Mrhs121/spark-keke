@@ -1063,21 +1063,25 @@ private[spark] class TaskSetManager(
     val levels = new ArrayBuffer[TaskLocality.TaskLocality]
     if (!pendingTasksForExecutor.isEmpty &&
         pendingTasksForExecutor.keySet.exists(sched.isExecutorAlive(_))) {
+      logInfo("  ==========> PROCESS_LOCAL")
       levels += PROCESS_LOCAL
     }
     if (!pendingTasksForHost.isEmpty &&
         pendingTasksForHost.keySet.exists(sched.hasExecutorsAliveOnHost(_))) {
+      logInfo("  ==========> NODE_LOCAL")
       levels += NODE_LOCAL
     }
     if (!pendingTasksWithNoPrefs.isEmpty) {
+      logInfo("  ==========> NO_PREF")
       levels += NO_PREF
     }
     if (!pendingTasksForRack.isEmpty &&
         pendingTasksForRack.keySet.exists(sched.hasHostAliveOnRack(_))) {
+      logInfo("  ==========> RACK_LOCAL")
       levels += RACK_LOCAL
     }
     levels += ANY
-    logDebug("Valid locality levels for " + taskSet + ": " + levels.mkString(", "))
+    logInfo("Valid locality levels for " + taskSet + ": " + levels.mkString(", "))
     levels.toArray
   }
 

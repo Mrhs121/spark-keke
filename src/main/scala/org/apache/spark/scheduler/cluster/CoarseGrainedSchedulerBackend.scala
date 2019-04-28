@@ -135,51 +135,51 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     }
 
     //keke:2019-4-20 10毫秒检测一次
-    def AddTaskCounter() {
-      // 同一个线程定时执行造成的问题，上一个时间还没有执行完毕，下一个时间又过来了
-      AddTaskTimer.scheduleAtFixedRate(new Runnable {
-        override def run(): Unit = Utils.tryOrStopSparkContext(scheduler.sc) {
-          // keke
-          checkTaskPreTime()
-        }
-      }, 10, 10, TimeUnit.MILLISECONDS)
-    }
+//    def AddTaskCounter() {
+//      // 同一个线程定时执行造成的问题，上一个时间还没有执行完毕，下一个时间又过来了
+//      AddTaskTimer.scheduleAtFixedRate(new Runnable {
+//        override def run(): Unit = Utils.tryOrStopSparkContext(scheduler.sc) {
+//          // keke
+//          checkTaskPreTime()
+//        }
+//      }, 10, 10, TimeUnit.MILLISECONDS)
+//    }
 
-    //keke:2019-4-20
-    def checkTaskPreTime() {
-
-      if (scheduler.nls.length != 0) {
-
-        for (i <- 0 until scheduler.nls.length) {
-          // 多线程问题  枷锁
-
-          if (scheduler.nls(i).preTime == 0 && scheduler.nls(i).firstcheckFlag == false) {
-
-            executorDataMap.get(scheduler.nls(i).execId) match {
-              case Some(executorInfo) =>
-                // 这里直接调度了
-                executorInfo.freeCores += scheduler.CPUS_PER_TASK
-                logInfo("scheduler.nls(i).pretime : +" + scheduler.nls(i).preTime + " task id :" + scheduler.nls(i).taskId)
-                makeOffers(scheduler.nls(i).execId)
-                scheduler.nls(i).firstcheckFlag == true
-                logInfo(s"KEKE execute checkTaskPreTime ")
-              case None =>
-                // Ignoring the update since we don't know about the executor.
-                logWarning(s"Ignored task status update ($scheduler.nls(i).taskId scheduler.nls(i).nstate $scheduler.nls(i).nstate) " +
-                  s"from unknown executor with ID $scheduler.nls(i).execId")
-            }
-
-
-          }
-        }
-      }
-    }
+//    //keke:2019-4-20
+//    def checkTaskPreTime() {
+//
+//      if (scheduler.nls.length != 0) {
+//
+//        for (i <- 0 until scheduler.nls.length) {
+//          // 多线程问题  枷锁
+//
+//          if (scheduler.nls(i).preTime == 0 && scheduler.nls(i).firstcheckFlag == false) {
+//
+//            executorDataMap.get(scheduler.nls(i).execId) match {
+//              case Some(executorInfo) =>
+//                // 这里直接调度了
+//                executorInfo.freeCores += scheduler.CPUS_PER_TASK
+//                logInfo("scheduler.nls(i).pretime : +" + scheduler.nls(i).preTime + " task id :" + scheduler.nls(i).taskId)
+//                makeOffers(scheduler.nls(i).execId)
+//                scheduler.nls(i).firstcheckFlag == true
+//                logInfo(s"KEKE execute checkTaskPreTime ")
+//              case None =>
+//                // Ignoring the update since we don't know about the executor.
+//                logWarning(s"Ignored task status update ($scheduler.nls(i).taskId scheduler.nls(i).nstate $scheduler.nls(i).nstate) " +
+//                  s"from unknown executor with ID $scheduler.nls(i).execId")
+//            }
+//
+//
+//          }
+//        }
+//      }
+//    }
 
     override def receive: PartialFunction[Any, Unit] = {
       // 在这里在添加一个自己的消息规则
       // case preMakeOffers()
       case PreMakeOffers(taskId: Long, executorId: String) =>
-        logInfo(s"@@@@@@@@@@@@ backend receive PreMakeOffers message")
+        logInfo(s"  ==========> backend receive PreMakeOffers message")
         executorDataMap.get(executorId) match {
           case Some(executorInfo) =>
             // 这里直接调度了
@@ -188,7 +188,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
             // 此时的core并没有真正的空闲
             // 如果这个任务失败了怎么办？
             makeOffers(executorId)
-            logInfo(s"@@@@@@@@@@@@@ PreMakeOffers message finished")
+            logInfo(s"  ==========> PreMakeOffers message finished")
           case None =>
             // Ignoring the update since we don't know about the executor.
             logWarning(s"Ignored task status update ($scheduler.nls(i).taskId scheduler.nls(i).nstate $scheduler.nls(i).nstate) " +
@@ -202,14 +202,13 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         // 如果 比预测时间提早完成
         // 那么这里什么事情都没有做
         if (TaskState.isFinished(state)) {
-
           executorDataMap.get(executorId) match {
             case Some(executorInfo) =>
-              logInfo("检测是否比预测时间提前完成")
+              logInfo("  ==========> 检测是否比预测时间提前完成")
               for (i <- 0 until scheduler.nls.length ){
                 logInfo("current finished taskid : "+taskId+" nls:"+scheduler.nls(i).taskId+" pretime:"+scheduler.nls(i).preTime)
                 if (scheduler.nls(i).taskId == taskId && scheduler.nls(i).preTime > 0){
-                  logInfo("预测失败！！！ 比预测时间提前完成 task")
+                  logInfo("  ==========> 预测失败！！！ 比预测时间提前完成 task")
                   executorInfo.freeCores += scheduler.CPUS_PER_TASK
                 }
               }
@@ -223,7 +222,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         scheduler.statusUpdate(taskId, state, data.value)
 
       case ReviveOffers =>
-        logInfo(s"KEKE reviveOffers receive")
+        logInfo(s"  ==========> KEKE reviveOffers receive")
         makeOffers()
 
       case KillTask(taskId, executorId, interruptThread, reason) =>
