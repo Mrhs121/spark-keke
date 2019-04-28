@@ -231,6 +231,7 @@ private[spark] class TaskSchedulerImpl(
       }
       hasReceivedTask = true
     }
+    logInfo("submit 调用 reviveOffers")
     backend.reviveOffers()
   }
 
@@ -311,11 +312,15 @@ private[spark] class TaskSchedulerImpl(
       availableCpus: Array[Int],
       tasks: IndexedSeq[ArrayBuffer[TaskDescription]],
       addressesWithDescs: ArrayBuffer[(String, TaskDescription)]) : Boolean = {
+    // shuffledOffers 经过洗牌之后的 exe的顺序
     logInfo("黄晟  ========> resourceOfferSingleTaskSet start shuffledOffers.size is : "+shuffledOffers.size)
     var launchedTask = false
     // nodes and executors that are blacklisted for the entire application have already been
     // filtered out by this point
     // 3个ex
+
+
+    logInfo("\n+++++++++++++++ for (i <- 0 until shuffledOffers.size) ++++++++++++++++++++++++++")
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
@@ -334,7 +339,7 @@ private[spark] class TaskSchedulerImpl(
             taskIdToExecutorId(tid) = execId
             executorIdToRunningTaskIds(execId).add(tid)
             availableCpus(i) -= CPUS_PER_TASK
-            logInfo("黄晟 =====> availableCpus(i) -= CPUS_PER_TASK avilablecpus is : "+availableCpus(i))
+            logInfo("executor "+execId+" 执行 availableCpus(i) -= CPUS_PER_TASK 剩余 core:"+availableCpus(i))
             assert(availableCpus(i) >= 0)
             // Only update hosts for a barrier task.
             if (taskSet.isBarrier) {
@@ -352,6 +357,7 @@ private[spark] class TaskSchedulerImpl(
         }
       }
     }
+    logInfo("++++++++++++++++++++++++++ end +++++++++++++++++++++++++++\n")
     return launchedTask
   }
 
@@ -364,7 +370,7 @@ private[spark] class TaskSchedulerImpl(
   def resourceOffers(offers: IndexedSeq[WorkerOffer]): Seq[Seq[TaskDescription]] = synchronized {
     // Mark each slave as alive and remember its hostname
     // Also track if new executor is added
-    logInfo("==============> resourceOffers")
+    logInfo("\n==============> resourceOffers <==============")
     var newExecAvail = false
     for (o <- offers) {
       if (!hostToExecutors.contains(o.host)) {
@@ -401,6 +407,9 @@ private[spark] class TaskSchedulerImpl(
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
 
     val availableCpus = shuffledOffers.map(o => o.cores).toArray // (1,1,1) 三个ex 每个e三个core
+
+
+
     val availableSlots = shuffledOffers.map(o => o.cores / CPUS_PER_TASK).sum
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
 
@@ -433,6 +442,7 @@ private[spark] class TaskSchedulerImpl(
           do {
 //resourceOfferSingleTaskSet ---------
             // 给core数量的任务分配资源
+            logInfo(s"availableCpus ${availableCpus.toString} ")
             launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(taskSet,
               currentMaxLocality, shuffledOffers, availableCpus, tasks, addressesWithDescs)
             launchedAnyTask |= launchedTaskAtCurrentMaxLocality
@@ -442,6 +452,7 @@ private[spark] class TaskSchedulerImpl(
         if (!launchedAnyTask) {
           taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
         }
+        // 不管他
           if (launchedAnyTask && taskSet.isBarrier) {
           // Check whether the barrier tasks are partially launched.
           // TODO SPARK-24818 handle the assert failure case (that can happen when some locality
@@ -481,6 +492,8 @@ private[spark] class TaskSchedulerImpl(
 //      for ( n <- nls){
 //        logInfo("===========> "+n.toString)
 //      }
+    } else {
+      logInfo("tasks size = 0")
     }
     return tasks
   }
@@ -530,17 +543,23 @@ private[spark] class TaskSchedulerImpl(
  //keke:2019-4-20
   //每隔1000毫秒预测时间减一
   def checkPreTime(){
+    logInfo(s"-->\n")
     if(nls.size != 0){
 	  for(i <- 0 until nls.length){
+
       if(nls(i).nstate == TaskState.RUNNING){
         nls(i).preTime = nls(i).preTime - 1
-        if (nls(i).preTime == 0)
-          backend.preMakeOffers(nls(i).taskId,nls(i).execId)
-        logInfo(s"KEKE  checkPreTime ===============> "+nls(i).taskId)
+        logInfo(s"===============> KEKE task ${nls(i).taskId}  pretime 减一秒，剩余$nls(i).preTime秒 ")
+        if (nls(i).preTime == 0) {
+          logInfo("task "+nls(i).taskId+" 即将结束，提前分配资源")
+          backend.preMakeOffers(nls(i).taskId, nls(i).execId)
+        }
+
       }
 	  }
+    logInfo(s"-->\n")
 	}
-	logInfo(s"KEKE execute checkPreTime")
+	//logInfo(s"KEKE execute checkPreTime")
  } 
 
   /**
@@ -637,6 +656,7 @@ private[spark] class TaskSchedulerImpl(
     if (failedExecutor.isDefined) {
       assert(reason.isDefined)
       dagScheduler.executorLost(failedExecutor.get, reason.get)
+      logInfo("statusUpdate 调用 reviveOffers")
       backend.reviveOffers()
     }
   }
@@ -682,6 +702,7 @@ private[spark] class TaskSchedulerImpl(
     if (!taskSetManager.isZombie && !taskSetManager.someAttemptSucceeded(tid)) {
       // Need to revive offers again now that the task set manager state has been updated to
       // reflect failed tasks that need to be re-run.
+      logInfo("handleFailTask 调用 reviveOffers")
       backend.reviveOffers()
     }
   }
@@ -732,6 +753,7 @@ private[spark] class TaskSchedulerImpl(
       shouldRevive = rootPool.checkSpeculatableTasks(MIN_TIME_TO_SPECULATION)
     }
     if (shouldRevive) {
+      logInfo("checkSpeculatable 调用 reviveOffers")
       backend.reviveOffers()
     }
   }
@@ -766,6 +788,7 @@ private[spark] class TaskSchedulerImpl(
     // Call dagScheduler.executorLost without holding the lock on this to prevent deadlock
     if (failedExecutor.isDefined) {
       dagScheduler.executorLost(failedExecutor.get, reason)
+      logInfo("executorLost 调用 reviveOffers")
       backend.reviveOffers()
     }
   }

@@ -142,6 +142,7 @@ private[spark] class LocalSchedulerBackend(
   }
 
   override def reviveOffers() {
+    logInfo("localScheduler 调用 reviveoffers")
     localEndpoint.send(ReviveOffers)
   }
 
