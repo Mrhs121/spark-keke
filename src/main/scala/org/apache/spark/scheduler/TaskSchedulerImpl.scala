@@ -22,10 +22,9 @@ import java.util.{Locale, Timer, TimerTask}
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 import java.util.concurrent.atomic.AtomicLong
 
-import scala.collection.Set
+import scala.collection.{Set, mutable}
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 import scala.util.Random
-
 import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.internal.Logging
@@ -326,9 +325,9 @@ private[spark] class TaskSchedulerImpl(
       val host = shuffledOffers(i).host
 
       // 此处有问题
-
+      logInfo("1 current executor "+execId+" avilablecpus is : "+availableCpus(i))
       if (availableCpus(i) >= CPUS_PER_TASK) {
-        logInfo("黄晟 =====> current executor "+i+" avilablecpus is : "+availableCpus(i))
+        logInfo("2 黄晟 =====> current executor "+execId+" avilablecpus is : "+availableCpus(i))
         try {
 
           for (task <- taskSet.resourceOffer(execId, host, maxLocality)) {
@@ -408,7 +407,9 @@ private[spark] class TaskSchedulerImpl(
 
     val availableCpus = shuffledOffers.map(o => o.cores).toArray // (1,1,1) 三个ex 每个e三个core
 
-
+    for(core <- availableCpus){
+      logInfo("     resourceOffers 1 =====> avilablecpus is : "+core)
+    }
 
     val availableSlots = shuffledOffers.map(o => o.cores / CPUS_PER_TASK).sum
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
@@ -442,11 +443,15 @@ private[spark] class TaskSchedulerImpl(
           do {
 //resourceOfferSingleTaskSet ---------
             // 给core数量的任务分配资源
-            logInfo(s"availableCpus ${availableCpus.toString} ")
+            for(core <- availableCpus){
+              logInfo("     resourceOffers 2 =====> avilablecpus is : "+core)
+            }
             launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(taskSet,
               currentMaxLocality, shuffledOffers, availableCpus, tasks, addressesWithDescs)
             launchedAnyTask |= launchedTaskAtCurrentMaxLocality
             logInfo("launchedTaskAtCurrentMaxLocality is : "+launchedTaskAtCurrentMaxLocality)
+
+
           } while (launchedTaskAtCurrentMaxLocality)
         }
         if (!launchedAnyTask) {
@@ -518,7 +523,9 @@ private[spark] class TaskSchedulerImpl(
   			if(executorIdToHost(nexecId) == "172.16.143.129") preTime = 8
   			if(executorIdToHost(nexecId) == "172.16.143.130") preTime = 4
   			var nstate: TaskState = TaskState.LAUNCHING
-  			val ls = new AddCollectionTask(ntId, nexecId, preTime,false, nstate)
+        var nmap = new mutable.HashMap[Long,String]()
+        nmap.put(ntId,nexecId)
+  			val ls = new AddCollectionTask(ntId, nexecId, nmap,preTime,false, nstate)
   			nls += ls
   			logInfo(s"KEKE execute addTask")
 		}	
@@ -544,18 +551,17 @@ private[spark] class TaskSchedulerImpl(
   //每隔1000毫秒预测时间减一
   def checkPreTime(){
     logInfo(s"-->\n")
-    if(nls.size != 0){
-	  for(i <- 0 until nls.length){
+    if(nls.length > 0){
+      for(i <- 0 until nls.length){
 
-      if(nls(i).nstate == TaskState.RUNNING){
-        nls(i).preTime = nls(i).preTime - 1
-        logInfo(s"===============> KEKE task ${nls(i).taskId}  pretime 减一秒，剩余$nls(i).preTime秒 ")
-        if (nls(i).preTime == 0) {
-          logInfo("task "+nls(i).taskId+" 即将结束，提前分配资源")
-          backend.preMakeOffers(nls(i).taskId, nls(i).execId)
+        if(nls(i).nstate == TaskState.RUNNING && nls(i).preTime >1 ){
+          nls(i).preTime = nls(i).preTime - 1
+          logInfo(s"===============> KEKE task ${nls(i).taskId}  pretime 减一秒，剩余${nls(i).preTime}秒 ")
+          if (nls(i).preTime == 0) {
+            logInfo("task "+ nls(i).taskId +" 即将结束，提前分配资源")
+            backend.preMakeOffers(nls(i).taskId, nls(i).execId)
+          }
         }
-
-      }
 	  }
     logInfo(s"-->\n")
 	}
@@ -590,35 +596,31 @@ private[spark] class TaskSchedulerImpl(
               }
             }
 
-
       			//keke:2019-4-22 更改任务状态
       			if (state == TaskState.RUNNING){
-
-      	          for(i <- 0 until nls.length){
-      	            if(tid == nls(i).taskId){
-      		          nls(i).nstate = TaskState.RUNNING
-      		        }
-      	          }
+              for(i <- 0 until nls.length){
+                if(tid == nls(i).taskId){
+                  nls(i).nstate = TaskState.RUNNING
+                }
+              }
       			  logInfo(s"KEKE execute TASK UPDATE RUNING")
       			}
 
 			
       if (TaskState.isFinished(state)) {
-      // keke:2019-4-18
-			// 移除列表中已完成的任务
 
-			  // for(i <- 0 until nls.length){
-     //      logInfo(s"=======>>>>>> "+i+" ======>"+nls.length)
-			  //   if(tid == nls(i).taskId){
-
-				 //    nls.remove(i)
-     //        logInfo(s"KEKE execute REMOVE TASK")
-				 //  }
-     //    }
+        // 如果 真实 的时间 比 预测时间 提前完成 ，
+        // 那么这里会把 那个没有减到0的任务移除掉，那个此时就不会释放这个task所占用的cpu
         var i = 0
         logInfo(s"statusUpdate nls.length = "+nls.length)
         while(i < nls.length){
           if(tid == nls(i).taskId){
+            // 在这里判断 真实的执行时间是否比预测时间快
+            if(nls(i).preTime !=0 ){
+              // 说明此时的预测时间 比 真实时间 慢
+              // 此时应该及时的释放core
+
+            }
             nls.remove(i)
             logInfo(s"KEKE statusUpdate 600 isFinished REMOVE TASK : "+tid)
           } else {
@@ -632,6 +634,7 @@ private[spark] class TaskSchedulerImpl(
         cleanupTaskState(tid)
               taskSet.removeRunningTask(tid)
               if (state == TaskState.FINISHED) {
+                // 这里面会打印 finished task {id} xxxxxx
                 taskResultGetter.enqueueSuccessfulTask(taskSet, tid, serializedData)
               } else if (Set(TaskState.FAILED, TaskState.KILLED, TaskState.LOST).contains(state)) {
                 taskResultGetter.enqueueFailedTask(taskSet, tid, state, serializedData)

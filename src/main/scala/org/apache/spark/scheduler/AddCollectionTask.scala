@@ -18,6 +18,8 @@
 package org.apache.spark.scheduler
 import org.apache.spark.TaskState.TaskState
 
+import scala.collection.mutable
+
 /**
  * Description of a task that gets passed onto executors to be executed, usually created by
  * `TaskSetManager.resourceOffer`.
@@ -26,6 +28,7 @@ import org.apache.spark.TaskState.TaskState
 private[spark] class AddCollectionTask(
     val taskId: Long,
     val execId: String,
+    var taskIdToexecId:mutable.HashMap[Long,String],
     var preTime: Int,
     var firstcheckFlag: Boolean,
 	var nstate: TaskState){

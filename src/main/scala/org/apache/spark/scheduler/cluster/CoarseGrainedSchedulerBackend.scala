@@ -196,19 +196,30 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         }
 
       case StatusUpdate(executorId, taskId, state, data) =>
-        scheduler.statusUpdate(taskId, state, data.value)
-        logInfo("状态更新 请求资源 ")
-              if (TaskState.isFinished(state)) {
-                executorDataMap.get(executorId) match {
-                  case Some(executorInfo) =>
-                    executorInfo.freeCores += scheduler.CPUS_PER_TASK
-                    makeOffers(executorId)
-                  case None =>
-                    // Ignoring the update since we don't know about the executor.
-                  logWarning(s"Ignored task status update ($taskId state $state) " +
-                    s"from unknown executor with ID $executorId")
+
+        //            executorInfo.freeCores += scheduler.CPUS_PER_TASK
+        //            makeOffers(executorId)
+        // 如果 比预测时间提早完成
+        // 那么这里什么事情都没有做
+        if (TaskState.isFinished(state)) {
+          executorDataMap.get(executorId) match {
+            case Some(executorInfo) =>
+              logInfo("检测是否比预测时间提前完成")
+              for (i <- 0 until scheduler.nls.length ){
+                logInfo("current finished taskid : "+taskId+" nls:"+scheduler.nls(i).taskId+" pretime:"+scheduler.nls(i).preTime)
+                if (scheduler.nls(i).taskId == taskId && scheduler.nls(i).preTime > 0){
+                  logInfo("预测失败！！！ 比预测时间提前完成 task")
+                  executorInfo.freeCores += scheduler.CPUS_PER_TASK
                 }
-      }
+              }
+
+            case None =>
+              // Ignoring the update since we don't know about the executor.
+            logWarning(s"Ignored task status update ($taskId state $state) " +
+              s"from unknown executor with ID $executorId")
+          }
+        }
+        scheduler.statusUpdate(taskId, state, data.value)
 
       case ReviveOffers =>
         logInfo(s"KEKE reviveOffers receive")
