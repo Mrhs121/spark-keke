@@ -210,6 +210,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
                 if (scheduler.nls(i).taskId == taskId && scheduler.nls(i).preTime > 0){
                   logInfo("  ==========> 预测失败！！！ 比预测时间提前完成 task")
                   executorInfo.freeCores += scheduler.CPUS_PER_TASK
+                  makeOffers(executorId)
                 }
               }
 
