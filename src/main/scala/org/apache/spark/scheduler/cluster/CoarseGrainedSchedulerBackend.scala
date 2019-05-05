@@ -202,9 +202,22 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         // 如果 比预测时间提早完成
         // 那么这里什么事情都没有做
         if (TaskState.isFinished(state)) {
+          // 本地任务没有监测到，所以这里需要对本地任务做另外一种措施
           executorDataMap.get(executorId) match {
             case Some(executorInfo) =>
+
+              // nls_map 只保存非本地任务
+              if(scheduler.nls_map.get(taskId) == None){
+                // 正常本地任务
+                logInfo(CommonString.HSLOG_PREFIX+"正常本地任务，走正常途径")
+                executorInfo.freeCores += scheduler.CPUS_PER_TASK
+                makeOffers(executorId)
+                scheduler.statusUpdate(taskId, state, data.value)
+
+              }
+
               logInfo("  ==========> 检测是否比预测时间提前完成")
+              // 没有监测到的任务进不来
               for (i <- 0 until scheduler.nls.length ){
                 logInfo("current finished taskid : "+taskId+" nls:"+scheduler.nls(i).taskId+" pretime:"+scheduler.nls(i).preTime)
                 if (scheduler.nls(i).taskId == taskId && scheduler.nls(i).preTime > 0){
@@ -220,6 +233,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
               s"from unknown executor with ID $executorId")
           }
         }
+
         scheduler.statusUpdate(taskId, state, data.value)
 
       case ReviveOffers =>

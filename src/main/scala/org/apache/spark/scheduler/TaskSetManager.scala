@@ -72,6 +72,7 @@ private[spark] class TaskSetManager(
   val env = SparkEnv.get
   val ser = env.closureSerializer.newInstance()
 
+
   val tasks = taskSet.tasks
   private[scheduler] val partitionToIndex = tasks.zipWithIndex
     .map { case (t, idx) => t.partitionId -> idx }.toMap
@@ -184,6 +185,7 @@ private[spark] class TaskSetManager(
 
   // Add all our tasks to the pending lists. We do this in reverse order
   // of task index so that tasks with low indices get launched first.
+  //
   for (i <- (0 until numTasks).reverse) {
     addPendingTask(i)
   }
@@ -211,11 +213,17 @@ private[spark] class TaskSetManager(
 
   private[scheduler] var emittedTaskSizeWarning = false
 
+  // pending 待解决的任务 待执行的任务
   /** Add a task to all the pending-task lists that it should be on. */
+  // index 为 task在taskset中的位置
+
   private[spark] def addPendingTask(index: Int) {
+    // preferredLocations 是一个数组 与分区相同
     for (loc <- tasks(index).preferredLocations) {
+      logInfo("loc : "+loc)
       loc match {
         case e: ExecutorCacheTaskLocation =>
+          // 数据已经缓存到当前 executor 的，与这块数据相对应的task ，把它的索引添加到pendingTasksForExecutor中
           pendingTasksForExecutor.getOrElseUpdate(e.executorId, new ArrayBuffer) += index
         case e: HDFSCacheTaskLocation =>
           val exe = sched.getExecutorsAliveOnHost(loc.host)
@@ -241,6 +249,7 @@ private[spark] class TaskSetManager(
       pendingTasksWithNoPrefs += index
     }
 
+    // 所有待执行的任务 包含所有的索引
     allPendingTasks += index  // No point scanning this whole list to find the old task there
   }
 
@@ -384,6 +393,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+    * 给一个指定节点，指定的级别 找一个待执行的任务，返回他在taskset中的索引和本地级别
+    * 知搜索 匹配指定级别的任务
    * Dequeue a pending task for a given node and return its index and locality level.
    * Only search for tasks matching the given locality constraint.
    *
@@ -392,22 +403,29 @@ private[spark] class TaskSetManager(
   private def dequeueTask(execId: String, host: String, maxLocality: TaskLocality.Value)
     : Option[(Int, TaskLocality.Value, Boolean)] =
   {
+
+    // 只能返回 比 maxLocality大的等级中寻找
+    // eg node local 只能从 process 和 node中找
+    logInfo(CommonString.HSLOG_PREFIX+"dequeueTask() exeid:"+execId+" host:"+host)
     for (index <- dequeueTaskFromList(execId, host, getPendingTasksForExecutor(execId))) {
       return Some((index, TaskLocality.PROCESS_LOCAL, false))
     }
 
+    logInfo("  ==========> 找不到本地 process local 任务")
     if (TaskLocality.isAllowed(maxLocality, TaskLocality.NODE_LOCAL)) {
       for (index <- dequeueTaskFromList(execId, host, getPendingTasksForHost(host))) {
         return Some((index, TaskLocality.NODE_LOCAL, false))
       }
     }
 
+    logInfo("  ==========> 找不到本地 node local  任务")
     if (TaskLocality.isAllowed(maxLocality, TaskLocality.NO_PREF)) {
       // Look for noPref tasks after NODE_LOCAL for minimize cross-rack traffic
       for (index <- dequeueTaskFromList(execId, host, pendingTasksWithNoPrefs)) {
         return Some((index, TaskLocality.PROCESS_LOCAL, false))
       }
     }
+    logInfo("  ==========> 找不到 no pref  任务")
 
     if (TaskLocality.isAllowed(maxLocality, TaskLocality.RACK_LOCAL)) {
       for {
@@ -418,8 +436,10 @@ private[spark] class TaskSetManager(
       }
     }
 
+    logInfo("  ==========> 找不到 RACK_LOCAL  任务")
     if (TaskLocality.isAllowed(maxLocality, TaskLocality.ANY)) {
       for (index <- dequeueTaskFromList(execId, host, allPendingTasks)) {
+        logInfo("  ==========> 返回any级别")
         return Some((index, TaskLocality.ANY, false))
       }
     }
@@ -430,6 +450,8 @@ private[spark] class TaskSetManager(
   }
 
   /**
+    *
+    * call by taskschedulerlmpl resourcesingletask
    * Respond to an offer of a single executor from the scheduler by finding a task
    *
    * NOTE: this function is either called with a maxLocality which
@@ -457,75 +479,95 @@ private[spark] class TaskSetManager(
       var allowedLocality = maxLocality
 
       if (maxLocality != TaskLocality.NO_PREF) {
+
+        // 得到当前允许的最大本地级别
         allowedLocality = getAllowedLocalityLevel(curTime)
+
+        logInfo(CommonString.HSLOG_PREFIX+"allowedLocality : "+allowedLocality)
+        // 如 node local > any
         if (allowedLocality > maxLocality) {
           // We're not allowed to search for farther-away tasks
           allowedLocality = maxLocality
         }
       }
 
-      dequeueTask(execId, host, allowedLocality).map { case ((index, taskLocality, speculative)) =>
-        // Found a task; do some bookkeeping and return a task description
-        val task = tasks(index)
-        val taskId = sched.newTaskId()
-        // Do various bookkeeping
-        copiesRunning(index) += 1
-        val attemptNum = taskAttempts(index).size
-        val info = new TaskInfo(taskId, index, attemptNum, curTime,
-          execId, host, taskLocality, speculative)
-        taskInfos(taskId) = info
-        taskAttempts(index) = info :: taskAttempts(index)
-        // Update our locality level for delay scheduling
-        // NO_PREF will not affect the variables related to delay scheduling
-        if (maxLocality != TaskLocality.NO_PREF) {
-          currentLocalityIndex = getLocalityIndex(taskLocality)
-          lastLaunchTime = curTime
-        }
-        // Serialize and return the task
-        val serializedTask: ByteBuffer = try {
-          ser.serialize(task)
-        } catch {
-          // If the task cannot be serialized, then there's no point to re-attempt the task,
-          // as it will always fail. So just abort the whole task-set.
-          case NonFatal(e) =>
-            val msg = s"Failed to serialize task $taskId, not attempting to retry it."
-            logError(msg, e)
-            abort(s"$msg Exception during serialization: $e")
-            throw new TaskNotSerializableException(e)
-        }
-        if (serializedTask.limit() > TaskSetManager.TASK_SIZE_TO_WARN_KB * 1024 &&
-          !emittedTaskSizeWarning) {
-          emittedTaskSizeWarning = true
-          logWarning(s"Stage ${task.stageId} contains a task of very large size " +
-            s"(${serializedTask.limit() / 1024} KB). The maximum recommended task size is " +
-            s"${TaskSetManager.TASK_SIZE_TO_WARN_KB} KB.")
-        }
-        addRunningTask(taskId)
+      // call by
+      // 返回 task 在 当前 taskset中的 下标
+      dequeueTask(execId, host, allowedLocality).map {
+        case ((index, taskLocality, speculative)) =>
+          // Found a task; do some bookkeeping and return a task description
+          val task = tasks(index)
+          val taskId = sched.newTaskId()
+          // Do various bookkeeping
+          copiesRunning(index) += 1
+          val attemptNum = taskAttempts(index).size
+          val info = new TaskInfo(taskId, index, attemptNum, curTime,
+            execId, host, taskLocality, speculative)
+          taskInfos(taskId) = info
+          taskAttempts(index) = info :: taskAttempts(index)
 
-        // We used to log the time it takes to serialize the task, but task size is already
-        // a good proxy to task serialization time.
-        // val timeTaken = clock.getTime() - startTime
-        val taskName = s"task ${info.id} in stage ${taskSet.id}"
-        logInfo(s"Starting $taskName (TID $taskId, $host, executor ${info.executorId}, " +
-          s"partition ${task.partitionId}, $taskLocality, ${serializedTask.limit()} bytes)")
+          // Update our locality level for delay scheduling
+          // NO_PREF will not affect the variables related to delay scheduling
 
-        sched.dagScheduler.taskStarted(task, info)
-        new TaskDescription(
-          taskId,
-          attemptNum,
-          execId,
-          taskName,
-          index,
-          task.partitionId,
-          addedFiles,
-          addedJars,
-          task.localProperties,
-          serializedTask)
-      }
+          if (maxLocality != TaskLocality.NO_PREF) {
+            logInfo(CommonString.HSLOG_PREFIX+"重新计算 currentLocalityIndex，计时器重置为当前时间")
+            // 只要前面有exe调度过 node任务，则此处会将index回复到 node位置
+            currentLocalityIndex = getLocalityIndex(taskLocality)
+            logInfo(CommonString.HSLOG_PREFIX+"currentLocalityIndex="+currentLocalityIndex)
+            lastLaunchTime = curTime
+          }
+          // Serialize and return the task
+          val serializedTask: ByteBuffer = try {
+            ser.serialize(task)
+          } catch {
+            // If the task cannot be serialized, then there's no point to re-attempt the task,
+            // as it will always fail. So just abort the whole task-set.
+            case NonFatal(e) =>
+              val msg = s"Failed to serialize task $taskId, not attempting to retry it."
+              logError(msg, e)
+              abort(s"$msg Exception during serialization: $e")
+              throw new TaskNotSerializableException(e)
+          }
+          if (serializedTask.limit() > TaskSetManager.TASK_SIZE_TO_WARN_KB * 1024 &&
+            !emittedTaskSizeWarning) {
+            emittedTaskSizeWarning = true
+            logWarning(s"Stage ${task.stageId} contains a task of very large size " +
+              s"(${serializedTask.limit() / 1024} KB). The maximum recommended task size is " +
+              s"${TaskSetManager.TASK_SIZE_TO_WARN_KB} KB.")
+          }
+          addRunningTask(taskId)
+
+          // We used to log the time it takes to serialize the task, but task size is already
+          // a good proxy to task serialization time.
+          // val timeTaken = clock.getTime() - startTime
+          val taskName = s"task ${info.id} in stage ${taskSet.id}"
+
+          logInfo(s"Starting $taskName (TID $taskId, $host, executor ${info.executorId}, " +
+            s"partition ${task.partitionId}, $taskLocality, ${serializedTask.limit()} bytes)")
+
+          sched.dagScheduler.taskStarted(task, info)
+          logInfo(CommonString.HSLOG_PREFIX+"resourceOffer return new TaskDescription")
+          new TaskDescription(
+            taskId,
+            attemptNum,
+            execId,
+            taskName,
+            index,
+            task.partitionId,
+            addedFiles,
+            addedJars,
+            task.localProperties,
+            serializedTask)
+
+        }
+
     } else {
+      logInfo(CommonString.HSLOG_PREFIX+"resourceOffer return None")
       None
     }
   }
+
+
 
   private def maybeFinishTaskSet() {
     if (isZombie && runningTasks == 0) {
@@ -576,14 +618,21 @@ private[spark] class TaskSetManager(
       hasTasks
     }
 
+    logInfo(" \n============> while")
     while (currentLocalityIndex < myLocalityLevels.length - 1) {
+      // 虽然存在降级，但是每次依然都是从 最大的级别 开始
+      // 若此处发生降级之后 就不会再循环
+      logInfo("currentLocality : "+myLocalityLevels(currentLocalityIndex))
       val moreTasks = myLocalityLevels(currentLocalityIndex) match {
         case TaskLocality.PROCESS_LOCAL => moreTasksToRunIn(pendingTasksForExecutor)
         case TaskLocality.NODE_LOCAL => moreTasksToRunIn(pendingTasksForHost)
         case TaskLocality.NO_PREF => pendingTasksWithNoPrefs.nonEmpty
         case TaskLocality.RACK_LOCAL => moreTasksToRunIn(pendingTasksForRack)
       }
+      logInfo("  ==========> moreTasks : "+moreTasks)
       if (!moreTasks) {
+        logInfo("  ==========> "+this.taskSet.stageId+"没有必要在等待了")
+        // 如果没有指定本地性的任务可以调度，那么没有必要在等待了
         // This is a performance optimization: if there are no more tasks that can
         // be scheduled at a particular locality level, there is no point in waiting
         // for the locality wait timeout (SPARK-4939).
@@ -591,17 +640,25 @@ private[spark] class TaskSetManager(
         logDebug(s"No tasks for locality level ${myLocalityLevels(currentLocalityIndex)}, " +
           s"so moving to locality level ${myLocalityLevels(currentLocalityIndex + 1)}")
         currentLocalityIndex += 1
+
       } else if (curTime - lastLaunchTime >= localityWaits(currentLocalityIndex)) {
+        logInfo(" ============> "+this.taskSet.stageId+"延迟调度策略，超过等待时间，等待时长为："+localityWaits(currentLocalityIndex))
         // Jump to the next locality level, and reset lastLaunchTime so that the next locality
         // wait timer doesn't immediately expire
         lastLaunchTime += localityWaits(currentLocalityIndex)
+
         logDebug(s"Moving to ${myLocalityLevels(currentLocalityIndex + 1)} after waiting for " +
           s"${localityWaits(currentLocalityIndex)}ms")
+        // 索引加一
         currentLocalityIndex += 1
+
       } else {
+        logInfo(" ============>taskset :"+this.taskSet.stageId+" 没有超多等到时长，以当前的最大级别调度")
+        // 这里直接返回了，所以不会在遍历到 下一个 允许 的级别了，所以不会看到  currentLocality：any了
         return myLocalityLevels(currentLocalityIndex)
       }
     }
+    logInfo(" ============> while finished\n")
     myLocalityLevels(currentLocalityIndex)
   }
 
@@ -612,6 +669,13 @@ private[spark] class TaskSetManager(
    */
   def getLocalityIndex(locality: TaskLocality.TaskLocality): Int = {
     var index = 0
+    // 如穿进来的是 any
+    // 那么while不变
+    // 如果 穿件来的是 node local
+    // myLocalityLevels只有 node any
+    // 排在后面得越大
+    // locality = any index = 1
+    // locality = node index = 0
     while (locality > myLocalityLevels(index)) {
       index += 1
     }
@@ -1061,23 +1125,25 @@ private[spark] class TaskSetManager(
   private def computeValidLocalityLevels(): Array[TaskLocality.TaskLocality] = {
     import TaskLocality.{PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY}
     val levels = new ArrayBuffer[TaskLocality.TaskLocality]
+    // 如果这个任务的数据已经 exe中
+
     if (!pendingTasksForExecutor.isEmpty &&
         pendingTasksForExecutor.keySet.exists(sched.isExecutorAlive(_))) {
-      logInfo("  ==========> PROCESS_LOCAL")
+      logInfo("  ==========> Add PROCESS_LOCAL")
       levels += PROCESS_LOCAL
     }
     if (!pendingTasksForHost.isEmpty &&
         pendingTasksForHost.keySet.exists(sched.hasExecutorsAliveOnHost(_))) {
-      logInfo("  ==========> NODE_LOCAL")
+      logInfo("  ==========> Add NODE_LOCAL")
       levels += NODE_LOCAL
     }
     if (!pendingTasksWithNoPrefs.isEmpty) {
-      logInfo("  ==========> NO_PREF")
+      logInfo("  ==========> Add NO_PREF")
       levels += NO_PREF
     }
     if (!pendingTasksForRack.isEmpty &&
         pendingTasksForRack.keySet.exists(sched.hasHostAliveOnRack(_))) {
-      logInfo("  ==========> RACK_LOCAL")
+      logInfo("  ==========> Add RACK_LOCAL")
       levels += RACK_LOCAL
     }
     levels += ANY

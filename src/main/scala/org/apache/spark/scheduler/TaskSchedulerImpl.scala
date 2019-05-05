@@ -196,7 +196,7 @@ private[spark] class TaskSchedulerImpl(
     waitBackendReady()
   }
 
-  // 提交任务
+  // 提交任务 call by dagscheduler
   override def submitTasks(taskSet: TaskSet) {
     logInfo("  ==========> submitTasks")
     val tasks = taskSet.tasks
@@ -325,6 +325,8 @@ private[spark] class TaskSchedulerImpl(
 
 
     logInfo("  ==========> 开始为executors分配任务")
+
+    // 每次为每个executor 的 一个空闲的core分配任务
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
@@ -336,8 +338,11 @@ private[spark] class TaskSchedulerImpl(
         logInfo("  ==========> current executor:" + execId + " can resource task")
         try {
           // 返回的是分配好任务的描述（分配在那个）executor里面了
+          // 指定executer，中exector->data task->data的映射中找指定的任务
+
           for (task <- taskSet.resourceOffer(execId, host, maxLocality)) {
-            logInfo(s"分配 task：" + task.taskId + "给 executor：" + execId)
+
+            logInfo(CommonString.HSLOG_PREFIX+"分配 task：" + task.taskId + "给 executor：" + execId)
             tasks(i) += task
             val tid = task.taskId
             taskIdToTaskSetManager.put(tid, taskSet)
@@ -379,6 +384,7 @@ private[spark] class TaskSchedulerImpl(
     // Also track if new executor is added
     logInfo("\n\n==============> resourceOffers <==============")
     var newExecAvail = false
+
     for (o <- offers) {
       if (!hostToExecutors.contains(o.host)) {
         hostToExecutors(o.host) = new HashSet[String]()
@@ -420,6 +426,7 @@ private[spark] class TaskSchedulerImpl(
     }
 
     val availableSlots = shuffledOffers.map(o => o.cores / CPUS_PER_TASK).sum
+
     // 不同的tasksetmanager
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
 
@@ -434,9 +441,9 @@ private[spark] class TaskSchedulerImpl(
     // Take each TaskSet in our scheduling order, and then offer it each node in increasing order
     // of locality levels so that it gets a chance to launch local tasks on all of them.
     // NOTE: the preferredLocality order: PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY
-
+    //  实际上每个阶段都不会同时进入队列的
     for (taskSet <- sortedTaskSets) {
-      logInfo("  ==========>从sortedTaskSets" + sortedTaskSets.size + "得到 taskset:" + taskSet.taskSet.stageId)
+      logInfo("  ==========>从sortedTaskSets (length="+ sortedTaskSets.length +")  sortedTaskSets.size  +得到" +taskSet.stageId+"  taskSet.taskSet.stageId")
       // Skip the barrier taskSet if the available slots are less than the number of pending tasks.
       if (taskSet.isBarrier && availableSlots < taskSet.numTasks) {
         // Skip the launch process.
@@ -449,6 +456,8 @@ private[spark] class TaskSchedulerImpl(
         var launchedAnyTask = false
         // Record all the executor IDs assigned barrier tasks on.
         val addressesWithDescs = ArrayBuffer[(String, TaskDescription)]()
+
+        // 计算当前taskset的本地级别的序列
         for (currentMaxLocality <- taskSet.myLocalityLevels) {
           var launchedTaskAtCurrentMaxLocality = false
           logInfo("  ==========> currentMaxLocality : " + currentMaxLocality.toString)
@@ -460,6 +469,7 @@ private[spark] class TaskSchedulerImpl(
             launchedAnyTask |= launchedTaskAtCurrentMaxLocality
             logInfo("  ==========> launchedTaskAtCurrentMaxLocality is : " + launchedTaskAtCurrentMaxLocality)
           } while (launchedTaskAtCurrentMaxLocality)
+
         }
 
         if (!launchedAnyTask) {
@@ -494,11 +504,34 @@ private[spark] class TaskSchedulerImpl(
     }
 
 
+
     // TODO SPARK-24823 Cancel a job that contains barrier stage(s) if the barrier tasks don't get
     // launched within a configured time.
     if (tasks.size > 0) {
       hasLaunchedTask = true
-      addTask(tasks)
+      //addTask(tasks)
+
+      for (ntask <- tasks.flatten) {
+        val ntaskInfo: TaskInfo = taskIdToTaskSetManager.get(ntask.taskId).taskInfos(ntask.taskId)
+        // 只给非本地任务添加预测zhi
+        // 原理：executor接收到了一个非本地任务，那么之后必定都是非本地任务，所以可以提前将数据拷贝过来
+        //      即没有必要再让task等待
+        //      预测这个非本地任务的时间，提前将下一个非本地任务的数据拷贝过来
+        //           先暂时不考虑网络的事情
+        //      注意：如果此task所需要的数据在网络中的传输时间 > 适合这个task的executor，距离执行完上一个task的剩余时间，
+        //           那么将此task分配到其他的节点计算就是负优化了
+        if (ntaskInfo.taskLocality != TaskLocality.NODE_LOCAL && ntaskInfo.taskLocality != TaskLocality.PROCESS_LOCAL) {
+          // 处理非本地任务
+          addTask(tasks)
+        } else {
+          // 如果是本地任务
+          // 这边需要 通知 core +1
+          // 这边通知干啥呢
+          // any 是一定要网络传输的
+
+        }
+      }
+
     } else {
       logInfo("tasks size = 0")
     }
@@ -509,6 +542,7 @@ private[spark] class TaskSchedulerImpl(
   //keke:2019-4-18
   //定义全局变量nls存储已分配资源的任务
   val nls = new ArrayBuffer[AddCollectionTask](100000)
+  var nls_map = new mutable.HashMap[Long,AddCollectionTask]()
   //keke:2019-4-18
 
   //将分配好资源的任务添加到列表中，增加预测时间和任务状态属性。 貌似这里有问题
@@ -518,16 +552,22 @@ private[spark] class TaskSchedulerImpl(
     for (ntask <- tasks.flatten) {
 
       val ntId: Long = ntask.taskId
+
       val nexecId = ntask.executorId
       var preTime: Int = 0
       //var firstcheckFlag: Boolean = false
       if (executorIdToHost(nexecId) == "172.16.143.128") preTime = 6
-      if (executorIdToHost(nexecId) == "172.16.143.129") preTime = 8
-      if (executorIdToHost(nexecId) == "172.16.143.130") preTime = 4
+      if (executorIdToHost(nexecId) == "172.16.143.129") preTime = 6
+      if (executorIdToHost(nexecId) == "172.16.143.130") preTime = 6
+
+//      if (executorIdToHost(nexecId) == "192.168.1.104") preTime = 5
+//      if (executorIdToHost(nexecId) == "192.168.1.105") preTime = 22
+//      if (executorIdToHost(nexecId) == "192.168.1.106") preTime = 27
       var nstate: TaskState = TaskState.LAUNCHING
       var nmap = new mutable.HashMap[Long, String]()
       nmap.put(ntId, nexecId)
       val ls = new AddCollectionTask(ntId, nexecId, nmap, preTime, false, nstate)
+      nls_map.put(ntId,ls)
       nls += ls
       logInfo(s"  ==========> KEKE execute addTask")
     }
@@ -617,7 +657,9 @@ private[spark] class TaskSchedulerImpl(
               logInfo(s"  ==========> statusUpdate nls.length = " + nls.length)
               while (i < nls.length) {
                 if (tid == nls(i).taskId) {
+                  nls_map.remove(tid)
                   nls.remove(i)
+
                   logInfo(s"  ==========> KEKE statusUpdate  isFinished REMOVE TASK : " + tid)
                 } else {
                   i = i + 1

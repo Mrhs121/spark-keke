@@ -26,6 +26,9 @@ object TaskLocality extends Enumeration {
 
   type TaskLocality = Value
 
+  // node local any
+  // any <? node local false
+  // 排在后面的大
   def isAllowed(constraint: TaskLocality, condition: TaskLocality): Boolean = {
     condition <= constraint
   }
