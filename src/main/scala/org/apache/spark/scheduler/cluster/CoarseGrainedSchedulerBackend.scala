@@ -195,6 +195,9 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
               s"from unknown executor with ID $scheduler.nls(i).execId")
         }
 
+
+
+
       case StatusUpdate(executorId, taskId, state, data) =>
 
         //            executorInfo.freeCores += scheduler.CPUS_PER_TASK
@@ -204,15 +207,16 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         if (TaskState.isFinished(state)) {
           // 本地任务没有监测到，所以这里需要对本地任务做另外一种措施
           executorDataMap.get(executorId) match {
+
             case Some(executorInfo) =>
 
-              // nls_map 只保存非本地任务
+              // nls_map 保存非本地任务
               if(scheduler.nls_map.get(taskId) == None){
                 // 正常本地任务
                 logInfo(CommonString.HSLOG_PREFIX+"正常本地任务，走正常途径")
                 executorInfo.freeCores += scheduler.CPUS_PER_TASK
                 makeOffers(executorId)
-                scheduler.statusUpdate(taskId, state, data.value)
+                //scheduler.statusUpdate(taskId, state, data.value)
 
               }
 

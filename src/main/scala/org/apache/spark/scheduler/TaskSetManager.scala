@@ -219,8 +219,11 @@ private[spark] class TaskSetManager(
 
   private[spark] def addPendingTask(index: Int) {
     // preferredLocations 是一个数组 与分区相同
+    logInfo(CommonString.HSLOG_PREFIX+ "addPendingTask")
     for (loc <- tasks(index).preferredLocations) {
-      logInfo("loc : "+loc)
+
+      logInfo(CommonString.HSLOG_PREFIX+ "task(index:"+index+") preferredLocations is : "+loc)
+
       loc match {
         case e: ExecutorCacheTaskLocation =>
           // 数据已经缓存到当前 executor 的，与这块数据相对应的task ，把它的索引添加到pendingTasksForExecutor中
@@ -494,6 +497,7 @@ private[spark] class TaskSetManager(
       // call by
       // 返回 task 在 当前 taskset中的 下标
       dequeueTask(execId, host, allowedLocality).map {
+
         case ((index, taskLocality, speculative)) =>
           // Found a task; do some bookkeeping and return a task description
           val task = tasks(index)
@@ -503,7 +507,10 @@ private[spark] class TaskSetManager(
           val attemptNum = taskAttempts(index).size
           val info = new TaskInfo(taskId, index, attemptNum, curTime,
             execId, host, taskLocality, speculative)
+
           taskInfos(taskId) = info
+          // 没有问题 这边 的 info添加了 本地性级别 的 属性
+
           taskAttempts(index) = info :: taskAttempts(index)
 
           // Update our locality level for delay scheduling
@@ -512,10 +519,13 @@ private[spark] class TaskSetManager(
           if (maxLocality != TaskLocality.NO_PREF) {
             logInfo(CommonString.HSLOG_PREFIX+"重新计算 currentLocalityIndex，计时器重置为当前时间")
             // 只要前面有exe调度过 node任务，则此处会将index回复到 node位置
+            // 标记   currentLocalityIndex这个是对整个 taskset而言的
             currentLocalityIndex = getLocalityIndex(taskLocality)
             logInfo(CommonString.HSLOG_PREFIX+"currentLocalityIndex="+currentLocalityIndex)
             lastLaunchTime = curTime
           }
+
+
           // Serialize and return the task
           val serializedTask: ByteBuffer = try {
             ser.serialize(task)
@@ -542,11 +552,13 @@ private[spark] class TaskSetManager(
           // val timeTaken = clock.getTime() - startTime
           val taskName = s"task ${info.id} in stage ${taskSet.id}"
 
+          // taskLocality这里出现了一次 本地 或者 非本地
           logInfo(s"Starting $taskName (TID $taskId, $host, executor ${info.executorId}, " +
             s"partition ${task.partitionId}, $taskLocality, ${serializedTask.limit()} bytes)")
 
           sched.dagScheduler.taskStarted(task, info)
           logInfo(CommonString.HSLOG_PREFIX+"resourceOffer return new TaskDescription")
+          // 也就是说 返回的 task描述并没有 本机级别 的 属性
           new TaskDescription(
             taskId,
             attemptNum,

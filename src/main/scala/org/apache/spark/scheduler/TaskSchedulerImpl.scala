@@ -348,7 +348,9 @@ private[spark] class TaskSchedulerImpl(
             taskIdToTaskSetManager.put(tid, taskSet)
             taskIdToExecutorId(tid) = execId
             executorIdToRunningTaskIds(execId).add(tid)
+
             availableCpus(i) -= CPUS_PER_TASK
+
             logInfo("  ==========> executor " + execId + " after resource task 剩余 core:" + availableCpus(i))
             assert(availableCpus(i) >= 0)
             // Only update hosts for a barrier task.
@@ -503,7 +505,7 @@ private[spark] class TaskSchedulerImpl(
       }
     }
 
-
+// 标记
 
     // TODO SPARK-24823 Cancel a job that contains barrier stage(s) if the barrier tasks don't get
     // launched within a configured time.
@@ -511,8 +513,10 @@ private[spark] class TaskSchedulerImpl(
       hasLaunchedTask = true
       //addTask(tasks)
 
-      for (ntask <- tasks.flatten) {
-        val ntaskInfo: TaskInfo = taskIdToTaskSetManager.get(ntask.taskId).taskInfos(ntask.taskId)
+
+      for (singleTask <- tasks.flatten) {
+        // 对俄的
+        val ntaskInfo: TaskInfo = taskIdToTaskSetManager.get(singleTask.taskId).taskInfos(singleTask.taskId)
         // 只给非本地任务添加预测zhi
         // 原理：executor接收到了一个非本地任务，那么之后必定都是非本地任务，所以可以提前将数据拷贝过来
         //      即没有必要再让task等待
@@ -522,12 +526,14 @@ private[spark] class TaskSchedulerImpl(
         //           那么将此task分配到其他的节点计算就是负优化了
         if (ntaskInfo.taskLocality != TaskLocality.NODE_LOCAL && ntaskInfo.taskLocality != TaskLocality.PROCESS_LOCAL) {
           // 处理非本地任务
-          addTask(tasks)
+          addTask(singleTask)
+
         } else {
           // 如果是本地任务
           // 这边需要 通知 core +1
           // 这边通知干啥呢
           // any 是一定要网络传输的
+
 
         }
       }
@@ -547,30 +553,32 @@ private[spark] class TaskSchedulerImpl(
 
   //将分配好资源的任务添加到列表中，增加预测时间和任务状态属性。 貌似这里有问题
   // call by resourceOffers
-  def addTask(tasks: Seq[Seq[TaskDescription]]) {
+  def addTask(singleTask: TaskDescription) {
 
-    for (ntask <- tasks.flatten) {
+    //for (ntask <- tasks.flatten) {
 
-      val ntId: Long = ntask.taskId
+      val ntId: Long = singleTask.taskId
 
-      val nexecId = ntask.executorId
-      var preTime: Int = 0
+      val nexecId = singleTask.executorId
+
+      // 默认6秒
+      var preTime: Int = 6
+
       //var firstcheckFlag: Boolean = false
       if (executorIdToHost(nexecId) == "172.16.143.128") preTime = 6
       if (executorIdToHost(nexecId) == "172.16.143.129") preTime = 6
       if (executorIdToHost(nexecId) == "172.16.143.130") preTime = 6
-
-//      if (executorIdToHost(nexecId) == "192.168.1.104") preTime = 5
-//      if (executorIdToHost(nexecId) == "192.168.1.105") preTime = 22
-//      if (executorIdToHost(nexecId) == "192.168.1.106") preTime = 27
       var nstate: TaskState = TaskState.LAUNCHING
       var nmap = new mutable.HashMap[Long, String]()
+
       nmap.put(ntId, nexecId)
       val ls = new AddCollectionTask(ntId, nexecId, nmap, preTime, false, nstate)
+
       nls_map.put(ntId,ls)
       nls += ls
+
       logInfo(s"  ==========> KEKE execute addTask")
-    }
+    //}
   }
 
   //定义一个时间计时器的全局线程，用于减去预测时间
@@ -648,7 +656,7 @@ private[spark] class TaskSchedulerImpl(
               logInfo(s"  ==========> KEKE execute TASK UPDATE RUNING")
             }
 
-
+            // 完成状态
             if (TaskState.isFinished(state)) {
 
               // 如果 真实 的时间 比 预测时间 提前完成 ，
