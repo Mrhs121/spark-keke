@@ -79,6 +79,7 @@ private[spark] class Executor(
   // Make sure the local hostname we report matches the cluster scheduler's name for this host
   Utils.setCustomHostname(executorHostname)
 
+  // 如果是非本地
   if (!isLocal) {
     // Setup an uncaught exception handler for non-local mode.
     // Make any thread terminations due to uncaught exceptions kill the entire
@@ -360,7 +361,12 @@ private[spark] class Executor(
       Thread.currentThread.setContextClassLoader(replClassLoader)
       val ser = env.closureSerializer.newInstance()
       logInfo(s"Running $taskName (TID $taskId)")
+
+
+
       execBackend.statusUpdate(taskId, TaskState.RUNNING, EMPTY_BYTE_BUFFER)
+
+
       var taskStartTime: Long = 0
       var taskStartCpu: Long = 0
       startGCTime = computeTotalGcTime()
@@ -371,6 +377,7 @@ private[spark] class Executor(
         Executor.taskDeserializationProps.set(taskDescription.properties)
 
         updateDependencies(taskDescription.addedFiles, taskDescription.addedJars)
+
         task = ser.deserialize[Task[Any]](
           taskDescription.serializedTask, Thread.currentThread.getContextClassLoader)
         task.localProperties = taskDescription.properties
@@ -396,13 +403,22 @@ private[spark] class Executor(
           env.mapOutputTracker.asInstanceOf[MapOutputTrackerWorker].updateEpoch(task.epoch)
         }
 
+
         // Run the actual task and measure its runtime.
         taskStartTime = System.currentTimeMillis()
+
+
         taskStartCpu = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
           threadMXBean.getCurrentThreadCpuTime
         } else 0L
         var threwException = true
+
+
+        // 时间 计时 在 正真 拉取数据 之前
+        // rdd在调用迭代函数的时候 才开始 正真 的 拉取 数据
+
         val value = Utils.tryWithSafeFinally {
+          // 开始正真的执行任务
           val res = task.run(
             taskAttemptId = taskId,
             attemptNumber = taskDescription.attemptNumber,
@@ -458,6 +474,7 @@ private[spark] class Executor(
         // includes the Partition. Second, Task.run() deserializes the RDD and function to be run.
         task.metrics.setExecutorDeserializeTime(
           (taskStartTime - deserializeStartTime) + task.executorDeserializeTime)
+
         task.metrics.setExecutorDeserializeCpuTime(
           (taskStartCpu - deserializeStartCpuTime) + task.executorDeserializeCpuTime)
         // We need to subtract Task.run()'s deserialization time to avoid double-counting
@@ -510,6 +527,7 @@ private[spark] class Executor(
 
         // Note: accumulator updates must be collected after TaskMetrics is updated
         val accumUpdates = task.collectAccumulatorUpdates()
+
         // TODO: do not serialize value twice
         val directResult = new DirectTaskResult(valueBytes, accumUpdates)
         val serializedDirectResult = ser.serialize(directResult)
@@ -794,6 +812,7 @@ private[spark] class Executor(
       for ((name, timestamp) <- newFiles if currentFiles.getOrElse(name, -1L) < timestamp) {
         logInfo("Fetching " + name + " with timestamp " + timestamp)
         // Fetch file with useCache mode, close cache for local mode.
+
         Utils.fetchFile(name, new File(SparkFiles.getRootDirectory()), conf,
           env.securityManager, hadoopConf, timestamp, useCache = !isLocal)
         currentFiles(name) = timestamp

@@ -63,20 +63,59 @@ private[spark] class ShuffleMapTask(
     jobId: Option[Int] = None,
     appId: Option[String] = None,
     appAttemptId: Option[String] = None,
-    isBarrier: Boolean = false)
+    isBarrier: Boolean = false,
+    complexity: Int = 1)
+//  默认构造 复杂度 为 1
   extends Task[MapStatus](stageId, stageAttemptId, partition.index, localProperties,
-    serializedTaskMetrics, jobId, appId, appAttemptId, isBarrier)
+    serializedTaskMetrics, jobId, appId, appAttemptId, isBarrier,complexity)
   with Logging {
+
+
+//  def this(dsaf:Int,b:Int){
+//    this(0, 0, null, new Partition { override def index: Int = 0 }, null, new Properties, null)
+//  }
+
+//  def this(stageId: Int,
+//           stageAttemptId: Int,
+//           taskBinary: Broadcast[Array[Byte]],
+//           partition: Partition,
+//           locs: Seq[TaskLocation],
+//           localProperties: Properties,
+//           serializedTaskMetrics: Array[Byte],
+//           jobId: Option[Int] = None,
+//           appId: Option[String] = None,
+//           appAttemptId: Option[String] = None,
+//           isBarrier: Boolean = false,
+//           complexity: Int) {
+//    this(stageId,
+//      stageAttemptId,
+//      taskBinary,
+//      partition,
+//      locs,
+//      localProperties,
+//      serializedTaskMetrics,
+//      jobId,
+//      appId,
+//      appAttemptId,
+//      isBarrier,
+//      complexity)
+//  }
 
   /** A constructor used only in test suites. This does not require passing in an RDD. */
   def this(partitionId: Int) {
     this(0, 0, null, new Partition { override def index: Int = 0 }, null, new Properties, null)
   }
 
+
+
+
+
   @transient private val preferredLocs: Seq[TaskLocation] = {
     if (locs == null) Nil else locs.toSet.toSeq
   }
 
+
+  // call by executor
   override def runTask(context: TaskContext): MapStatus = {
     // Deserialize the RDD using the broadcast variable.
     val threadMXBean = ManagementFactory.getThreadMXBean
@@ -85,8 +124,14 @@ private[spark] class ShuffleMapTask(
       threadMXBean.getCurrentThreadCpuTime
     } else 0L
     val ser = SparkEnv.get.closureSerializer.newInstance()
+
     val (rdd, dep) = ser.deserialize[(RDD[_], ShuffleDependency[_, _, _])](
       ByteBuffer.wrap(taskBinary.value), Thread.currentThread.getContextClassLoader)
+
+
+// 怎么通过依赖关系 计算 复杂度
+
+
     _executorDeserializeTime = System.currentTimeMillis() - deserializeStartTime
     _executorDeserializeCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
       threadMXBean.getCurrentThreadCpuTime - deserializeStartCpuTime
@@ -95,9 +140,18 @@ private[spark] class ShuffleMapTask(
     var writer: ShuffleWriter[Any, Any] = null
     try {
       val manager = SparkEnv.get.shuffleManager
+
       writer = manager.getWriter[Any, Any](dep.shuffleHandle, partitionId, context)
-      writer.write(rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
+
+      // 处理当前分区的数据
+      writer.write(
+
+        rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]]
+
+      )
+
       writer.stop(success = true).get
+
     } catch {
       case e: Exception =>
         try {

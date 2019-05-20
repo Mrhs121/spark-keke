@@ -76,9 +76,11 @@ import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, Poi
  */
 abstract class RDD[T: ClassTag](
     @transient private var _sc: SparkContext,
-    @transient private var deps: Seq[Dependency[_]]
+    @transient private var deps: Seq[Dependency[_]],
+    @transient private var _complexity:Int = 1 //这里给了每个rdd的默认复杂度
   ) extends Serializable with Logging {
 
+  def complexity = _complexity
   if (classOf[RDD[_]].isAssignableFrom(elementClassTag.runtimeClass)) {
     // This is a warning instead of an exception in order to avoid breaking user programs that
     // might have defined nested RDDs without running jobs with them.
@@ -100,9 +102,12 @@ abstract class RDD[T: ClassTag](
     _sc
   }
 
+  /** RDD[_] 任意类型的rdd*/
   /** Construct an RDD with just a one-to-one dependency on one parent */
   def this(@transient oneParent: RDD[_]) =
-    this(oneParent.context, List(new OneToOneDependency(oneParent)))
+    this(oneParent.context, List(new OneToOneDependency(oneParent)),oneParent._complexity+1)
+
+
 
   private[spark] def conf = sc.conf
   // =======================================================================
@@ -278,13 +283,15 @@ abstract class RDD[T: ClassTag](
 
   /**
    * Internal method to this RDD; will read from cache if applicable, or otherwise compute it.
-   * This should ''not'' be called by users directly, but is available for implementors of custom
-   * subclasses of RDD.
+    * * This should ''not'' be called by users directly, but is available for implementors of custom
+    * * subclasses of RDD.
    */
   final def iterator(split: Partition, context: TaskContext): Iterator[T] = {
     if (storageLevel != StorageLevel.NONE) {
+
       getOrCompute(split, context)
     } else {
+      // 走的是这里
       computeOrReadCheckpoint(split, context)
     }
   }
@@ -318,9 +325,11 @@ abstract class RDD[T: ClassTag](
    */
   private[spark] def computeOrReadCheckpoint(split: Partition, context: TaskContext): Iterator[T] =
   {
+    logInfo("huangsheng computeOrReadCheckpoint")
     if (isCheckpointedAndMaterialized) {
       firstParent[T].iterator(split, context)
     } else {
+      logInfo("RDD computeOrReadCheckpoint")
       compute(split, context)
     }
   }
@@ -329,14 +338,23 @@ abstract class RDD[T: ClassTag](
    * Gets or computes an RDD partition. Used by RDD.iterator() when an RDD is cached.
    */
   private[spark] def getOrCompute(partition: Partition, context: TaskContext): Iterator[T] = {
+    logInfo("RDD getOrCompute")
+    
     val blockId = RDDBlockId(id, partition.index)
+
     var readCachedBlock = true
+
+    // 在这里 才 真正 的拉取数据
+
+    // getOrElseUpdate 会调用 真正的网络模块 下载数据
     // This method is called on executors, so we need call SparkEnv.get instead of sc.env.
     SparkEnv.get.blockManager.getOrElseUpdate(blockId, storageLevel, elementClassTag, () => {
       readCachedBlock = false
       computeOrReadCheckpoint(partition, context)
+
     }) match {
       case Left(blockResult) =>
+        logInfo("RDD getOrCompute Left(blockResult)")
         if (readCachedBlock) {
           val existingMetrics = context.taskMetrics().inputMetrics
           existingMetrics.incBytesRead(blockResult.bytes)

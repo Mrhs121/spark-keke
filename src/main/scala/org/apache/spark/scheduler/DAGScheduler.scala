@@ -380,7 +380,9 @@ private[spark] class DAGScheduler(
    * regenerating data.
    */
   def createShuffleMapStage(shuffleDep: ShuffleDependency[_, _, _], jobId: Int): ShuffleMapStage = {
+    // 这个 rdd  是依赖的上游的rdd
     val rdd = shuffleDep.rdd
+
     checkBarrierStageWithDynamicAllocation(rdd)
     checkBarrierStageWithNumSlots(rdd)
     checkBarrierStageWithRDDChainPattern(rdd, rdd.getNumPartitions)
@@ -1013,6 +1015,7 @@ private[spark] class DAGScheduler(
     submitStage(finalStage)
   }
 
+  // receive 处理这个 消息
   private[scheduler] def handleMapStageSubmitted(jobId: Int,
       dependency: ShuffleDependency[_, _, _],
       callSite: CallSite,
@@ -1048,6 +1051,7 @@ private[spark] class DAGScheduler(
     val stageInfos = stageIds.flatMap(id => stageIdToStage.get(id).map(_.latestInfo))
     listenerBus.post(
       SparkListenerJobStart(job.jobId, jobSubmissionTime, stageInfos, properties))
+
     submitStage(finalStage)
 
     // If the whole stage has already finished, tell the listener and remove it
@@ -1056,7 +1060,8 @@ private[spark] class DAGScheduler(
     }
   }
 
-  /** Submits stage, but first recursively submits any missing parents. */
+  // Submits stage, but first recursively submits any missing parents.
+  // call by front fun
   private def submitStage(stage: Stage) {
     val jobId = activeJobForStage(stage)
     if (jobId.isDefined) {
@@ -1082,6 +1087,7 @@ private[spark] class DAGScheduler(
 
   /** Called when stage's parents are available and we can now do its task. */
   private def submitMissingTasks(stage: Stage, jobId: Int) {
+
     logDebug("submitMissingTasks(" + stage + ")")
 
     // 分区
@@ -1180,25 +1186,58 @@ private[spark] class DAGScheduler(
         return
     }
 
+    // 这里 get task 分区信息了
     val tasks: Seq[Task[_]] = try {
       val serializedTaskMetrics = closureSerializer.serialize(stage.latestInfo.taskMetrics).array()
+
       stage match {
+
         case stage: ShuffleMapStage =>
+          //logInfo(CommonString.HSLOG_IMPOTANT+"处理 ShuffleMapStage，生成taskset 列表")
+          //logInfo(CommonString.HSLOG_IMPOTANT+"当前 stage 依赖的rdd 的 依赖列表的长度为:"+stage.rdd.dependencies.size)
+//          for(dep <- stage.rdd.dependencies){
+//            logInfo(CommonString.HSLOG_IMPOTANT+"依赖"+dep.toString)
+//          }
+          //logInfo(CommonString.HSLOG_IMPOTANT+"当前 依赖的 rdd 的 name："+stage.rdd.name)
+          //logInfo(CommonString.HSLOG_IMPOTANT+"当前 依赖的 rdd 的 复杂度为："+stage.rdd.complexity)
           stage.pendingPartitions.clear()
+          // 对 没有 计算过 的分区，生成对应处理该分区数据的 singletask
           partitionsToCompute.map { id =>
             val locs = taskIdToLocations(id)
             val part = partitions(id)
             stage.pendingPartitions += id
-            new ShuffleMapTask(stage.id, stage.latestInfo.attemptNumber,
-              taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
-              Option(sc.applicationId), sc.applicationAttemptId, stage.rdd.isBarrier())
+            //logInfo(CommonString.HSLOG_IMPOTANT+"生成 新的 Shuffle task "+part)
+            // MapStatus task 的类型
+
+            new ShuffleMapTask(
+              stage.id,
+              stage.latestInfo.attemptNumber,
+              taskBinary,
+              part,
+              locs,
+              properties,
+              serializedTaskMetrics,
+              Option(jobId),
+              Option(sc.applicationId),
+              sc.applicationAttemptId,
+              stage.rdd.isBarrier(),
+              // 默认 构造里面的默认值 为 1
+              stage.rdd.complexity)
           }
 
         case stage: ResultStage =>
+//          logInfo(CommonString.HSLOG_IMPOTANT+"处理 ShuffleMapStage，生成taskset 列表")
+//          logInfo(CommonString.HSLOG_IMPOTANT+"当前 stage 依赖的rdd 的 依赖列表的长度为:"+stage.rdd.dependencies.size)
+//          for(dep <- stage.rdd.dependencies){
+//            logInfo(CommonString.HSLOG_IMPOTANT+"依赖"+dep.toString)
+//          }
+//          logInfo(CommonString.HSLOG_IMPOTANT+"当前 依赖的 rdd 的 name："+stage.rdd.name)
+//          logInfo(CommonString.HSLOG_IMPOTANT+"当前 依赖的 rdd 的 复杂度为："+stage.rdd.complexity)
           partitionsToCompute.map { id =>
             val p: Int = stage.partitions(id)
             val part = partitions(p)
             val locs = taskIdToLocations(id)
+//            logInfo(CommonString.HSLOG_IMPOTANT+"生成 新的 Result task "+part)
             new ResultTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, id, properties, serializedTaskMetrics,
               Option(jobId), Option(sc.applicationId), sc.applicationAttemptId,
@@ -1391,6 +1430,8 @@ private[spark] class DAGScheduler(
             shuffleStage.pendingPartitions -= task.partitionId
             val status = event.result.asInstanceOf[MapStatus]
             val execId = status.location.executorId
+//            status.getSizeForBlock()
+            status.getSizeForBlock(1)
             logDebug("ShuffleMapTask finished on " + execId)
             if (failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
               logInfo(s"Ignoring possibly bogus $smt completion from executor $execId")

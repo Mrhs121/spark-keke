@@ -725,7 +725,7 @@ private[spark] class BlockManager(
     // could just use the inputStream on the temp file, rather than reading the file into memory.
     // Until then, replication can cause the process to use too much memory and get killed
     // even though we've read the data to disk.
-    logDebug(s"Getting remote block $blockId")
+    logInfo(s"Getting remote block $blockId")
     require(blockId != null, "BlockId is null")
     var runningFailureCount = 0
     var totalFailureCount = 0

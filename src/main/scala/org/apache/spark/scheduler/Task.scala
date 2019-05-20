@@ -63,8 +63,11 @@ private[spark] abstract class Task[T](
     val jobId: Option[Int] = None,
     val appId: Option[String] = None,
     val appAttemptId: Option[String] = None,
-    val isBarrier: Boolean = false) extends Serializable {
+    val isBarrier: Boolean = false,
+    var complexity_ :Int = 1) extends Serializable {
+    // 默认 一个 任务 的 复杂度 为 1
 
+  def complexity = complexity_
   @transient lazy val metrics: TaskMetrics =
     SparkEnv.get.closureSerializer.newInstance().deserialize(ByteBuffer.wrap(serializedTaskMetrics))
 

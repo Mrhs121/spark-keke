@@ -47,6 +47,12 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
   // Use an atomic variable to track total number of cores in the cluster for simplicity and speed
   protected val totalCoreCount = new AtomicInteger(0)
+
+
+  def totalCore = totalCoreCount.intValue()
+
+  var freeCores = totalCoreCount.intValue()
+
   // Total number of executors that are currently registered
   protected val totalRegisteredExecutors = new AtomicInteger(0)
   protected val conf = scheduler.sc.conf
@@ -134,61 +140,27 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       //AddTaskCounter()
     }
 
-    //keke:2019-4-20 10毫秒检测一次
-//    def AddTaskCounter() {
-//      // 同一个线程定时执行造成的问题，上一个时间还没有执行完毕，下一个时间又过来了
-//      AddTaskTimer.scheduleAtFixedRate(new Runnable {
-//        override def run(): Unit = Utils.tryOrStopSparkContext(scheduler.sc) {
-//          // keke
-//          checkTaskPreTime()
-//        }
-//      }, 10, 10, TimeUnit.MILLISECONDS)
-//    }
-
-//    //keke:2019-4-20
-//    def checkTaskPreTime() {
-//
-//      if (scheduler.nls.length != 0) {
-//
-//        for (i <- 0 until scheduler.nls.length) {
-//          // 多线程问题  枷锁
-//
-//          if (scheduler.nls(i).preTime == 0 && scheduler.nls(i).firstcheckFlag == false) {
-//
-//            executorDataMap.get(scheduler.nls(i).execId) match {
-//              case Some(executorInfo) =>
-//                // 这里直接调度了
-//                executorInfo.freeCores += scheduler.CPUS_PER_TASK
-//                logInfo("scheduler.nls(i).pretime : +" + scheduler.nls(i).preTime + " task id :" + scheduler.nls(i).taskId)
-//                makeOffers(scheduler.nls(i).execId)
-//                scheduler.nls(i).firstcheckFlag == true
-//                logInfo(s"KEKE execute checkTaskPreTime ")
-//              case None =>
-//                // Ignoring the update since we don't know about the executor.
-//                logWarning(s"Ignored task status update ($scheduler.nls(i).taskId scheduler.nls(i).nstate $scheduler.nls(i).nstate) " +
-//                  s"from unknown executor with ID $scheduler.nls(i).execId")
-//            }
-//
-//
-//          }
-//        }
-//      }
-//    }
 
     override def receive: PartialFunction[Any, Unit] = {
       // 在这里在添加一个自己的消息规则
       // case preMakeOffers()
+
       case PreMakeOffers(taskId: Long, executorId: String) =>
         logInfo(s"  ==========> backend receive PreMakeOffers message")
         executorDataMap.get(executorId) match {
           case Some(executorInfo) =>
             // 这里直接调度了
             executorInfo.freeCores += scheduler.CPUS_PER_TASK
+
+            scheduler.freeCores += scheduler.CPUS_PER_TASK
+
             // 这边提前给一个core分配任务之后，core会不会立即launch 任务并执行呢？？？
             // 此时的core并没有真正的空闲
             // 如果这个任务失败了怎么办？
-            makeOffers(executorId)
+//            makeOffers(executorId)
+            makeAnyOffers(executorId)
             logInfo(s"  ==========> PreMakeOffers message finished")
+
           case None =>
             // Ignoring the update since we don't know about the executor.
             logWarning(s"Ignored task status update ($scheduler.nls(i).taskId scheduler.nls(i).nstate $scheduler.nls(i).nstate) " +
@@ -205,31 +177,38 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         // 如果 比预测时间提早完成
         // 那么这里什么事情都没有做
         if (TaskState.isFinished(state)) {
+
           // 本地任务没有监测到，所以这里需要对本地任务做另外一种措施
           executorDataMap.get(executorId) match {
 
             case Some(executorInfo) =>
 
-              // nls_map 保存非本地任务
+
+              // nls_map存储的是any任务，如果在这里面找不到就意味这是个本地任务
+              // None这个是个坑 不要写成 null了
               if(scheduler.nls_map.get(taskId) == None){
                 // 正常本地任务
                 logInfo(CommonString.HSLOG_PREFIX+"正常本地任务，走正常途径")
                 executorInfo.freeCores += scheduler.CPUS_PER_TASK
+                scheduler.freeCores += scheduler.CPUS_PER_TASK
                 makeOffers(executorId)
                 //scheduler.statusUpdate(taskId, state, data.value)
-
-              }
-
-              logInfo("  ==========> 检测是否比预测时间提前完成")
-              // 没有监测到的任务进不来
-              for (i <- 0 until scheduler.nls.length ){
-                logInfo("current finished taskid : "+taskId+" nls:"+scheduler.nls(i).taskId+" pretime:"+scheduler.nls(i).preTime)
-                if (scheduler.nls(i).taskId == taskId && scheduler.nls(i).preTime > 0){
-                  logInfo("  ==========> 预测失败！！！ 比预测时间提前完成 task")
-                  executorInfo.freeCores += scheduler.CPUS_PER_TASK
-                  makeOffers(executorId)
+              } else {
+                //logInfo("  ==========> 检测是否比预测时间提前完成")
+                // 这里买呢的是any任务
+                for (i <- 0 until scheduler.nls.length ){
+                  logInfo("current finished taskid : "+taskId+" nls:"+scheduler.nls(i).taskId+" pretime:"+scheduler.nls(i).preTime)
+                  if (scheduler.nls(i).taskId == taskId &&  scheduler.nls(i).preTime>0){
+                    // 找到这个已经完成的任务
+                    // 说明这个任务的真实时间比预测时间还要更早的完成，所以这个任务就不会走PreMakeOffers了
+                    executorInfo.freeCores += scheduler.CPUS_PER_TASK
+                    scheduler.freeCores += scheduler.CPUS_PER_TASK
+                    makeOffers(executorId)
+                  }
                 }
               }
+
+
 
             case None =>
               // Ignoring the update since we don't know about the executor.
@@ -241,7 +220,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
         scheduler.statusUpdate(taskId, state, data.value)
 
       case ReviveOffers =>
-        logInfo(s"  ==========> KEKE reviveOffers receive")
+        //logInfo(s"  ==========> KEKE reviveOffers receive")
         makeOffers()
 
       case KillTask(taskId, executorId, interruptThread, reason) =>
@@ -297,6 +276,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           logInfo(s"Registered executor $executorRef ($executorAddress) with ID $executorId")
           addressToExecutorId(executorAddress) = executorId
           totalCoreCount.addAndGet(cores)
+          scheduler.freeCores+=cores
           totalRegisteredExecutors.addAndGet(1)
           val data = new ExecutorData(executorRef, executorAddress, hostname,
             cores, cores, logUrls)
@@ -395,6 +375,35 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       }
     }
 
+    // 提前再分配一个any任务
+    private def makeAnyOffers(executorId: String) {
+      // Make sure no executor is killed while some task is launching on it
+      val task = CoarseGrainedSchedulerBackend.this.synchronized {
+        // Filter out executors under killing
+        logInfo("prepare scheduler.resourceOffers")
+        if (executorIsAlive(executorId)) {
+          logInfo("success make -> resourceOffers")
+          val executorData = executorDataMap(executorId)
+          val workOffers = IndexedSeq(
+            new WorkerOffer(executorId, executorData.executorHost, executorData.freeCores,
+              Some(executorData.executorAddress.hostPort)))
+          // 为任务分配资源
+            scheduler.resourceSingleAnyOffer(workOffers(0))
+        } else {
+          logInfo("failed make -> resourceOffers")
+          Seq.empty
+        }
+      }.asInstanceOf[TaskDescription]
+      var taskDescs = Seq(Seq(task))
+      if (task!=null) {
+        launchTasks(taskDescs)
+      }
+    }
+
+
+
+
+
     private def executorIsAlive(executorId: String): Boolean = synchronized {
       !executorsPendingToRemove.contains(executorId) &&
         !executorsPendingLossReason.contains(executorId)
@@ -421,6 +430,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           val executorData = executorDataMap(task.executorId)
 
           executorData.freeCores -= scheduler.CPUS_PER_TASK
+          scheduler.freeCores -= scheduler.CPUS_PER_TASK
 
           logInfo(s"Launching task ${task.taskId} on executor id: ${task.executorId} hostname: " +
             s"${executorData.executorHost}.")

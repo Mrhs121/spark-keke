@@ -165,6 +165,12 @@ package object config {
     .toSequence
     .createWithDefault(Nil)
 
+  private[spark] val NET_SPEED =
+    ConfigBuilder("spark.netspeed")
+      .intConf
+      .createWithDefault(1048576)
+
+
   private[spark] val MAX_TASK_FAILURES =
     ConfigBuilder("spark.task.maxFailures")
       .intConf

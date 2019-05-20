@@ -23,20 +23,19 @@ import java.util.{Date, Locale}
 
 import scala.collection.immutable.Map
 import scala.reflect.ClassTag
-
 import org.apache.hadoop.conf.{Configurable, Configuration}
 import org.apache.hadoop.mapred._
 import org.apache.hadoop.mapred.lib.CombineFileSplit
 import org.apache.hadoop.mapreduce.TaskType
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat
 import org.apache.hadoop.util.ReflectionUtils
-
 import org.apache.spark._
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config._
+import org.apache.spark.network.RestHttpClient
 import org.apache.spark.rdd.HadoopRDD.HadoopMapPartitionsWithSplitRDD
 import org.apache.spark.scheduler.{HDFSCacheTaskLocation, HostTaskLocation}
 import org.apache.spark.storage.StorageLevel
@@ -186,30 +185,43 @@ class HadoopRDD[K, V](
     }
   }
 
+  // K 输入数据的类型  V 输出数据的类型
+  // 这里调用的是 hadoop自己的接口
+  // 通过反射 生成 对象
+
   protected def getInputFormat(conf: JobConf): InputFormat[K, V] = {
     val newInputFormat = ReflectionUtils.newInstance(inputFormatClass.asInstanceOf[Class[_]], conf)
       .asInstanceOf[InputFormat[K, V]]
+
     newInputFormat match {
+
       case c: Configurable => c.setConf(conf)
       case _ =>
     }
     newInputFormat
   }
 
+  // 决定分区 逻辑的代码 ，hadoop会计算每个分区的数据量是多少
   override def getPartitions: Array[Partition] = {
     val jobConf = getJobConf()
     // add the credentials here as this can be called before SparkContext initialized
     SparkHadoopUtil.get.addCredentials(jobConf)
     try {
+
       val allInputSplits = getInputFormat(jobConf).getSplits(jobConf, minPartitions)
+
       val inputSplits = if (ignoreEmptySplits) {
         allInputSplits.filter(_.getLength > 0)
       } else {
         allInputSplits
       }
       val array = new Array[Partition](inputSplits.size)
+
+      logInfo("黄晟 inputSplits size:"+inputSplits.size)
+
       for (i <- 0 until inputSplits.size) {
         array(i) = new HadoopPartition(id, i, inputSplits(i))
+//        RestHttpClient.post(id+"",i+"",inputSplits(i).getLength+"")
       }
       array
     } catch {
@@ -220,11 +232,26 @@ class HadoopRDD[K, V](
     }
   }
 
+
   override def compute(theSplit: Partition, context: TaskContext): InterruptibleIterator[(K, V)] = {
+
     val iter = new NextIterator[(K, V)] {
 
       private val split = theSplit.asInstanceOf[HadoopPartition]
-      logInfo("Input split: " + split.inputSplit)
+      val str = split.inputSplit.toString
+      // 想办法吧这个变量存储起来
+      logInfo( "stage :"+context.stageId +"partition "+theSplit.index+"Input split: " + split.inputSplit.toString)
+      logInfo("huangsheng split.inputSplit:"+split.inputSplit.toString+" length="+split.inputSplit.toString.split(":").length )
+      //val splitinfos = str.substring(str.lastIndexOf("/"))
+      // 通过 restapi保存
+      // 这里有问题
+      val splitinfos = str.substring(str.lastIndexOf("/")).replace("/","").split(":");
+      logInfo("$$$$$$$$$$$$ "+splitinfos.toString)
+      if (splitinfos.length == 2)
+        logInfo("========> post splitinfos to restful api")
+
+      RestHttpClient.post(context.stageId()+"",theSplit.index +"",splitinfos(0)+splitinfos(1))
+
       private val jobConf = getJobConf()
 
       private val inputMetrics = context.taskMetrics().inputMetrics
@@ -241,6 +268,7 @@ class HadoopRDD[K, V](
       // Find a function that will return the FileSystem bytes read by this thread. Do this before
       // creating RecordReader, because RecordReader's constructor might read some bytes
       private val getBytesReadCallback: Option[() => Long] = split.inputSplit.value match {
+
         case _: FileSplit | _: CombineFileSplit =>
           Some(SparkHadoopUtil.get.getFSBytesReadOnThreadCallback())
         case _ => None
@@ -258,10 +286,11 @@ class HadoopRDD[K, V](
 
       private var reader: RecordReader[K, V] = null
       private val inputFormat = getInputFormat(jobConf)
+
       HadoopRDD.addLocalConfiguration(
         new SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(createTime),
         context.stageId, theSplit.index, context.attemptNumber, jobConf)
-
+// 重要
       reader =
         try {
           inputFormat.getRecordReader(split.inputSplit.value, jobConf, Reporter.NULL)
@@ -289,6 +318,7 @@ class HadoopRDD[K, V](
       private val value: V = if (reader == null) null.asInstanceOf[V] else reader.createValue()
 
       override def getNext(): (K, V) = {
+//        logInfo("huangsheng getNext  ")
         try {
           finished = !reader.next(key, value)
         } catch {
@@ -307,6 +337,7 @@ class HadoopRDD[K, V](
         if (inputMetrics.recordsRead % SparkHadoopUtil.UPDATE_INPUT_METRICS_INTERVAL_RECORDS == 0) {
           updateBytesRead()
         }
+//
         (key, value)
       }
 
@@ -339,6 +370,7 @@ class HadoopRDD[K, V](
         }
       }
     }
+    // 返回一个迭代器
     new InterruptibleIterator[(K, V)](context, iter)
   }
 
@@ -423,6 +455,7 @@ private[spark] object HadoopRDD extends Logging {
     override def getPartitions: Array[Partition] = firstParent[T].partitions
 
     override def compute(split: Partition, context: TaskContext): Iterator[U] = {
+
       val partition = split.asInstanceOf[HadoopPartition]
       val inputSplit = partition.inputSplit.value
       f(inputSplit, firstParent[T].iterator(split, context))

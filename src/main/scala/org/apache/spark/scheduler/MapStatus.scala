@@ -38,6 +38,7 @@ private[spark] sealed trait MapStatus {
   def location: BlockManagerId
 
   /**
+    * 估算 数据量的大小
    * Estimated size for the reduce block, in bytes.
    *
    * If a block is non-empty, then this method MUST return a non-zero size.  This invariant is
@@ -56,7 +57,7 @@ private[spark] object MapStatus {
   private lazy val minPartitionsToUseHighlyCompressMapStatus = Option(SparkEnv.get)
     .map(_.conf.get(config.SHUFFLE_MIN_NUM_PARTS_TO_HIGHLY_COMPRESS))
     .getOrElse(config.SHUFFLE_MIN_NUM_PARTS_TO_HIGHLY_COMPRESS.defaultValue.get)
-
+// uncompressedSizes 没有被压缩的
   def apply(loc: BlockManagerId, uncompressedSizes: Array[Long]): MapStatus = {
     if (uncompressedSizes.length > minPartitionsToUseHighlyCompressMapStatus) {
       HighlyCompressedMapStatus(loc, uncompressedSizes)
