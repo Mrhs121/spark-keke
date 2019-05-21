@@ -49,7 +49,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   protected val totalCoreCount = new AtomicInteger(0)
 
 
-  def totalCore = totalCoreCount.intValue()
+  def totalCores = totalCoreCount.intValue()
 
   var freeCores = totalCoreCount.intValue()
 
@@ -159,7 +159,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
             // 如果这个任务失败了怎么办？
 //            makeOffers(executorId)
             makeAnyOffers(executorId)
-            logInfo(s"  ==========> PreMakeOffers message finished")
+            //logInfo(s"  ==========> PreMakeOffers message finished")
 
           case None =>
             // Ignoring the update since we don't know about the executor.
@@ -276,6 +276,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           logInfo(s"Registered executor $executorRef ($executorAddress) with ID $executorId")
           addressToExecutorId(executorAddress) = executorId
           totalCoreCount.addAndGet(cores)
+          scheduler.totalCoreCount.addAndGet(cores)
           scheduler.freeCores+=cores
           totalRegisteredExecutors.addAndGet(1)
           val data = new ExecutorData(executorRef, executorAddress, hostname,
@@ -377,18 +378,21 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
     // 提前再分配一个any任务
     private def makeAnyOffers(executorId: String) {
+      logInfo(CommonString.HSLOG_PREFIX+"makeAnyOffers")
       // Make sure no executor is killed while some task is launching on it
       val task = CoarseGrainedSchedulerBackend.this.synchronized {
         // Filter out executors under killing
-        logInfo("prepare scheduler.resourceOffers")
+        //logInfo("prepare scheduler.resourceOffers")
         if (executorIsAlive(executorId)) {
-          logInfo("success make -> resourceOffers")
+          //logInfo("success make -> resourceOffers")
           val executorData = executorDataMap(executorId)
-          val workOffers = IndexedSeq(
-            new WorkerOffer(executorId, executorData.executorHost, executorData.freeCores,
-              Some(executorData.executorAddress.hostPort)))
+          val workoffer = new WorkerOffer(executorId, executorData.executorHost, executorData.freeCores,
+            Some(executorData.executorAddress.hostPort))
+//          val workOffers = IndexedSeq(
+//            new WorkerOffer(executorId, executorData.executorHost, executorData.freeCores,
+//              Some(executorData.executorAddress.hostPort)))
           // 为任务分配资源
-            scheduler.resourceSingleAnyOffer(workOffers(0))
+            scheduler.resourceSingleAnyOffer(workoffer)
         } else {
           logInfo("failed make -> resourceOffers")
           Seq.empty
@@ -454,6 +458,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
             executorsPendingToRemove.remove(executorId).getOrElse(false)
           }
           totalCoreCount.addAndGet(-executorInfo.totalCores)
+          scheduler.totalCoreCount.addAndGet(-executorInfo.totalCores)
           totalRegisteredExecutors.addAndGet(-1)
           scheduler.executorLost(executorId, if (killed) ExecutorKilled else reason)
           listenerBus.post(

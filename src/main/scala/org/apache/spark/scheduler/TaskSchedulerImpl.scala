@@ -20,7 +20,7 @@ package org.apache.spark.scheduler
 import java.nio.ByteBuffer
 import java.util.{Locale, Timer, TimerTask}
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
 import scala.collection.{Set, mutable}
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
@@ -57,6 +57,7 @@ private[spark] class TaskSchedulerImpl(
                                         isLocal: Boolean = false)
   extends TaskScheduler with Logging {
 
+
   import TaskSchedulerImpl._
 
   def this(sc: SparkContext) = {
@@ -70,6 +71,9 @@ private[spark] class TaskSchedulerImpl(
   val conf = sc.conf
 
   var freeCores = 0
+  val totalCoreCount = new AtomicInteger(0)
+
+
 
   // How often to check for speculative tasks
   val SPECULATION_INTERVAL_MS = conf.getTimeAsMs("spark.speculation.interval", "100ms")
@@ -329,12 +333,12 @@ private[spark] class TaskSchedulerImpl(
 
     // 获取数据量的大小 默认128m
     var splitSize = RestHttpClient.get(stageId+"",singleTask.partitionId+"")
-    logInfo(CommonString.HSLOG_IMPOTANT+"该任务的 split size:"+splitSize+" partition:"+singleTask.partitionId)
-    val netSpeed = sc.conf.get(config.NET_SPEED)
+    //logInfo(CommonString.HSLOG_IMPOTANT+"该任务的 split size:"+splitSize+" partition:"+singleTask.partitionId)
+    //val netSpeed = sc.conf.get(config.NET_SPEED)
 
     //logError(CommonString.HSLOG_IMPOTANT+s"predict : send splitblock may use ${splitSize} / ${netSpeed} s")
-    logInfo(CommonString.HSLOG_IMPOTANT+s"该任务的数据在网络的传输时间大概为：${splitSize} / ${netSpeed} s")
-    logInfo(CommonString.HSLOG_IMPOTANT+"该任务的复杂度为："+complexity)
+    //logInfo(CommonString.HSLOG_IMPOTANT+s"该任务的数据在网络的传输时间大概为：${splitSize} / ${netSpeed} s")
+    //logInfo(CommonString.HSLOG_IMPOTANT+"该任务的复杂度为："+complexity)
 
 
     // 这边 还需要 通过配置文件获取一下节点的性能
@@ -343,7 +347,7 @@ private[spark] class TaskSchedulerImpl(
 
 
     // 默认6秒
-    var preTime: Int = 10
+    var preTime: Int = 60
 
     //var firstcheckFlag: Boolean = false
     //      if (executorIdToHost(nexecId) == "172.16.143.128") preTime = 6
@@ -361,7 +365,7 @@ private[spark] class TaskSchedulerImpl(
     nls_map.put(ntId,ls)
     nls += ls
 
-    logInfo(s"  ==========> KEKE execute addTask")
+    //logInfo(s"  ==========> KEKE execute addTask")
     //}
   }
 
@@ -380,7 +384,7 @@ private[spark] class TaskSchedulerImpl(
     // 3个ex
 
 
-    logInfo("  ==========> 开始为executors分配任务")
+    //logInfo("  ==========> 开始为executors分配任务")
 
     // 每次为每个executor 的 一个空闲的core分配任务
     for (i <- 0 until shuffledOffers.size) {
@@ -688,15 +692,8 @@ private[spark] class TaskSchedulerImpl(
 
         var launchedAnyTask = false
         var launchedTaskAtAnyLocality = false
-        // Record all the executor IDs assigned barrier tasks on.
-        val addressesWithDescs = ArrayBuffer[(String, TaskDescription)]()
-
-
-            //resourceOfferSingleTaskSet ---------
-            // 给core数量的任务分配资源
         task = resourceOfferSingleAnyTaskSet(taskSet,
               ANY,offer)
-
         //logInfo("  ==========> launchedTaskAtCurrentMaxLocality is : " + launchedTaskAtAnyLocality)
         if (!launchedAnyTask) {
           taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
@@ -704,6 +701,7 @@ private[spark] class TaskSchedulerImpl(
     }
     if (task != null) {
       hasLaunchedTask = true
+      logInfo(s"直接给executor:${offer.executorId} ${offer.host}分配any任务")
     } else {
       logInfo("?_? 没有给节点分配any任务，检测错误")
     }
@@ -716,10 +714,8 @@ private[spark] class TaskSchedulerImpl(
   //定义一个时间计时器的全局线程，用于减去预测时间
   //keke:2019-4-18  
   def nTimeCounter() {
-
     if (!isLocal) {
       logInfo("  ==========> Starting Timer thread")
-
       TimeExecutor.scheduleAtFixedRate(new Runnable {
         override def run(): Unit = Utils.tryOrStopSparkContext(sc) {
           // 检测预测时间
@@ -745,15 +741,18 @@ private[spark] class TaskSchedulerImpl(
           // 2、如果没有发生变化，那么下一次的any任务不需要经过等待
           // 这里涉及到几个变量 numTasks tasksSuccessful
 
-
           if (nls(i).preTime == 0) {
             import TaskLocality.{PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY}
             // 当一个any任务结束之后，立即对 本地行的级别进行判断
-            //
+
             val restTasks = taskIdToTaskSetManager.get(nls(i).taskId).numTasks - taskIdToTaskSetManager.get(nls(i).taskId).successfulTasksNum
             var locality = taskIdToTaskSetManager.get(nls(i).taskId).myLocalityLevels(taskIdToTaskSetManager.get(nls(i).taskId).currentLocalityIndex_)
             logInfo(s"++++++++++++ restTasks:${restTasks} locality:${locality} freeCores:${freeCores}")
-            if(restTasks>freeCores && locality!=ANY){
+            // 这个算法 可能 需要 改正
+            // 不应该是 > freeCore，应该是大于总的core数量 或者即将空闲的core的数量
+            // 因为 freecore的数量永远树小于 restcore的数量了
+            // 那么这个时候就需要 预测 任务的 完成时间了
+            if(restTasks>totalCoreCount.intValue()/2 && locality!=ANY){
 
               // 例如现在还剩下 12个任务还没有开始，预测在接下来的3s内有几个core即将处于空闲状态，如果待执行的任务数量依然远大于
               // core的数量，那么就直接调度，这里需要重写 tasksetmanger的任务调度，重写一个
